@@ -54,9 +54,9 @@ class TrainingConfig:
     
     # Model configuration
     vocab_size: int = 50257
-    n_embd: int = 768
-    n_head: int = 12
-    n_layer: int = 12
+    n_embd: int = 512
+    n_head: int = 8
+    n_layer: int = 8
     block_size: int = 1024
     dropout: float = 0.1
     bias: bool = True

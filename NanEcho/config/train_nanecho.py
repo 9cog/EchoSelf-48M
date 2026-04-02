@@ -12,9 +12,9 @@ from typing import Dict, Any, Tuple, List
 
 # === Base Model Configuration ===
 # Model architecture optimized for Echo Self representation
-n_layer = 12          # Deeper layers for recursive reasoning
-n_head = 12           # More attention heads for complex pattern encoding
-n_embd = 768          # Larger embedding for rich persona representation
+n_layer = 8           # Layers optimized for 48M parameter target (OEIS A000081: a(7)=48)
+n_head = 8            # Attention heads aligned with 48M architecture
+n_embd = 512          # Embedding dimension for 48M parameter model
 dropout = 0.1         # Moderate dropout for generalization
 bias = True           # Use bias for better Echo Self characteristics
 block_size = 1024     # Sufficient context for Echo Self reasoning
@@ -96,7 +96,7 @@ ADAPTIVE_LEARNING = {
     'persona_balanced_training': True,    # Balance training across persona dimensions
     'echo_depth_progression': True,       # Gradually increase reasoning depth
     'min_echo_depth': 1,                 # Start with simple reasoning
-    'max_echo_depth': 5,                 # Build up to complex recursive reasoning
+    'max_echo_depth': 7,                 # Build up to depth-7 tree structures (OEIS A000081: a(7)=48)
     'persona_weight_schedule': [0.3, 0.5, 0.7, 0.8, 0.9],  # Increase persona emphasis
 }
 

@@ -600,9 +600,9 @@ def main():
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
         device=args.device,
-        n_layer=6,  # Smaller for demo
-        n_head=6,
-        n_embd=384,
+        n_layer=8,  # 48M parameter target (OEIS A000081: 20→48)
+        n_head=8,
+        n_embd=512,
         eval_interval=250,
         checkpoint_interval=500
     )

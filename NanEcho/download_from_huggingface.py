@@ -116,9 +116,9 @@ def convert_to_nanecho_format(
         'model': nanecho_state,
         'config': {
             'vocab_size': config.get('vocab_size', 50257),
-            'n_embd': config.get('n_embd', 768),
-            'n_head': config.get('n_head', 12),
-            'n_layer': config.get('n_layer', 12),
+            'n_embd': config.get('n_embd', 512),
+            'n_head': config.get('n_head', 8),
+            'n_layer': config.get('n_layer', 8),
             'block_size': config.get('n_positions', 1024),
             'dropout': config.get('embd_pdrop', 0.1),
             'bias': True,

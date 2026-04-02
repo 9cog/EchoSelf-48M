@@ -39,9 +39,9 @@ class NanEchoGenerator:
             config_dict = checkpoint['config']
             self.config = NanEchoConfig(
                 vocab_size=config_dict.get('vocab_size', 50257),
-                n_embd=config_dict.get('n_embd', 768),
-                n_head=config_dict.get('n_head', 12),
-                n_layer=config_dict.get('n_layer', 12),
+                n_embd=config_dict.get('n_embd', 512),
+                n_head=config_dict.get('n_head', 8),
+                n_layer=config_dict.get('n_layer', 8),
                 block_size=config_dict.get('block_size', 1024),
                 dropout=0.0,  # No dropout for generation
                 bias=config_dict.get('bias', True),
