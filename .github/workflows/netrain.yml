@@ -31,17 +31,17 @@ on:
       n_layer:
         description: 'Number of transformer layers'
         required: False
-        default: '12'
+        default: '8'
         type: string
       n_head:
         description: 'Number of attention heads'
         required: False
-        default: '12'
+        default: '8'
         type: string
       n_embd:
         description: 'Embedding dimension'
         required: False
-        default: '768'
+        default: '512'
         type: string
       max_iters:
         description: 'Maximum training iterations'
@@ -399,10 +399,10 @@ jobs:
           echo "output_dir=out-nanecho-ci" >> $GITHUB_OUTPUT
         elif [[ "${{ github.event_name }}" == "schedule" ]]; then
           echo "Scheduled relentless training mode - using optimized parameters for Deep Tree Echo"
-          echo "n_layer=6" >> $GITHUB_OUTPUT
-          echo "n_head=6" >> $GITHUB_OUTPUT
-          echo "n_embd=384" >> $GITHUB_OUTPUT
-          echo "max_iters=500" >> $GITHUB_OUTPUT
+          echo "n_layer=8" >> $GITHUB_OUTPUT
+          echo "n_head=8" >> $GITHUB_OUTPUT
+          echo "n_embd=512" >> $GITHUB_OUTPUT
+          echo "max_iters=1000" >> $GITHUB_OUTPUT
           echo "batch_size=4" >> $GITHUB_OUTPUT
           echo "learning_rate=1e-4" >> $GITHUB_OUTPUT
           echo "output_dir=out-nanecho-relentless" >> $GITHUB_OUTPUT

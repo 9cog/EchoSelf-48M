@@ -117,7 +117,7 @@ threshold = 0.5 + (cognitive_load * 0.3) - (recent_activity * 0.2)
 ### Training Modes
 
 - **CI Mode**: Quick validation (4 layers, 200 iterations)
-- **Full Mode**: Complete training (12 layers, 50000 iterations)
+- **Full Mode**: Complete training (8 layers, 50000 iterations)
 - **Relentless Mode**: Continuous persona reinforcement (scheduled every 4 hours)
 
 ## Cumulative Training Safeguards

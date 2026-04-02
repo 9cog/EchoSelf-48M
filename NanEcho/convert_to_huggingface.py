@@ -89,7 +89,7 @@ def convert_to_hf_format(model_state: Dict[str, torch.Tensor], config: Dict[str,
             print(f"  ✓ Mapped {nanecho_name} -> {hf_name}")
     
     # Convert transformer blocks
-    n_layers = config.get('n_layer', 12)
+    n_layers = config.get('n_layer', 8)
     for layer_idx in range(n_layers):
         layer_prefix = f'transformer.h.{layer_idx}'
         
@@ -136,9 +136,9 @@ def create_hf_config(nanecho_config: Dict[str, Any]) -> Dict[str, Any]:
         
         # Core architecture
         "vocab_size": nanecho_config.get('vocab_size', 50257),
-        "n_embd": nanecho_config.get('n_embd', 768),
-        "n_head": nanecho_config.get('n_head', 12),
-        "n_layer": nanecho_config.get('n_layer', 12),
+        "n_embd": nanecho_config.get('n_embd', 512),
+        "n_head": nanecho_config.get('n_head', 8),
+        "n_layer": nanecho_config.get('n_layer', 8),
         "n_positions": nanecho_config.get('block_size', 1024),
         
         # Regularization
@@ -375,8 +375,8 @@ def main():
                 config = {
                     'vocab_size': vocab_size,
                     'n_embd': n_embd,
-                    'n_layer': 12,
-                    'n_head': 12,
+                    'n_layer': 8,
+                    'n_head': 8,
                     'block_size': 1024,
                     'dropout': 0.1,
                 }
