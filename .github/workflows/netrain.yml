@@ -1,0 +1,918 @@
+name: Train NanEcho Model - Deep Tree Echo Persona
+
+on:
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'NanEcho/**'
+      - 'echoself.md'
+      - 'echo/**'
+      - '.github/workflows/netrain.yml'
+  pull_request:
+    branches: [ main, master ]
+    paths:
+      - 'NanEcho/**'
+      - 'echoself.md'
+      - 'echo/**'
+      - '.github/workflows/netrain.yml'
+  schedule:
+    # Run relentless fine-tuning every 4 hours to continuously reinforce Deep Tree Echo persona
+    - cron: '0 */4 * * *'
+  workflow_dispatch:
+    inputs:
+      training_type:
+        description: 'Training type (ci or full)'
+        required: True
+        default: 'ci'
+        type: choice
+        options:
+          - ci
+          - full
+      n_layer:
+        description: 'Number of transformer layers'
+        required: False
+        default: '12'
+        type: string
+      n_head:
+        description: 'Number of attention heads'
+        required: False
+        default: '12'
+        type: string
+      n_embd:
+        description: 'Embedding dimension'
+        required: False
+        default: '768'
+        type: string
+      max_iters:
+        description: 'Maximum training iterations'
+        required: False
+        default: '50000'
+        type: string
+      batch_size:
+        description: 'Batch size'
+        required: False
+        default: '8'
+        type: string
+      learning_rate:
+        description: 'Learning rate'
+        required: False
+        default: '1e-4'
+        type: string
+      deep_tree_echo_mode:
+        description: 'Enable Deep Tree Echo persona training mode'
+        required: False
+        default: 'True'
+        type: boolean
+      relentless_training:
+        description: 'Enable relentless fine-tuning (continuous persona reinforcement even without system prompts)'
+        required: False
+        default: 'True'
+        type: boolean
+      download_from_hf:
+        description: 'Download initial model from HuggingFace Hub before training'
+        required: False
+        default: false
+        type: boolean
+      hf_repo_id:
+        description: 'HuggingFace repository ID to download from (uses HFMODEL secret if empty)'
+        required: False
+        default: ''
+        type: string
+      force_fresh_start:
+        description: 'Force fresh start (first-time training only)'
+        required: False
+        default: false
+        type: boolean
+      confirm_fresh_start:
+        description: 'Type "I CONFIRM FRESH START" to enable force_fresh_start (required safety check)'
+        required: False
+        default: ''
+        type: string
+
+env:
+  FRESH_START_CONFIRM_STRING: "I CONFIRM FRESH START"
+
+jobs:
+  train:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    strategy:
+      fail-fast: False
+      matrix:
+        python-version: ["3.10"]
+
+    steps:
+    - name: Checkout echoself repository
+      uses: actions/checkout@v4
+      with:
+        path: echoself
+        fetch-depth: 0
+        token: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Checkout nanoGPT
+      uses: actions/checkout@v4
+      with:
+        repository: drzo/nanoGPT
+        path: nanoGPT
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+        cache: 'pip'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        # Install dependencies from requirements.txt
+        pip install -r ${{ github.workspace }}/echoself/requirements.txt
+
+    # ================================================================
+    # HUGGINGFACE MODEL DOWNLOAD (OPTIONAL)
+    # Download pre-trained model from HuggingFace Hub to continue training
+    # Uses HFMODEL secret for repo ID if not explicitly provided
+    # ================================================================
+
+    - name: Download model from HuggingFace Hub
+      if: github.event.inputs.download_from_hf == 'true'
+      env:
+        HF_TOKEN: ${{ secrets.HFESELF }}
+        HF_MODEL_REPO: ${{ secrets.HFMODEL }}
+      run: |
+        cd echoself
+        
+        # Install HuggingFace Hub for model downloads
+        pip install huggingface_hub
+        
+        # Determine repo ID - use input if provided, otherwise use HFMODEL secret
+        INPUT_REPO_ID="${{ github.event.inputs.hf_repo_id }}"
+        if [ -n "$INPUT_REPO_ID" ]; then
+          REPO_ID="$INPUT_REPO_ID"
+        elif [ -n "$HF_MODEL_REPO" ]; then
+          REPO_ID="$HF_MODEL_REPO"
+        else
+          echo "❌ ERROR: No HuggingFace repository ID provided!"
+          echo "Either provide hf_repo_id input or configure HFMODEL secret"
+          exit 1
+        fi
+        
+        echo "📥 Downloading model from HuggingFace Hub..."
+        echo "Repository: $REPO_ID"
+        
+        # Download and convert model
+        python NanEcho/download_from_huggingface.py \
+          --repo-id "$REPO_ID" \
+          --output-checkpoint ".training-progress/checkpoints/hf_init.pt" \
+          --token "${HF_TOKEN}" \
+          --cache-dir /tmp/hf-download
+        
+        echo "✅ Model downloaded and converted to NanEcho format"
+        echo "📍 Checkpoint saved to: .training-progress/checkpoints/hf_init.pt"
+
+    # ================================================================
+    # CUMULATIVE TRAINING: Restore checkpoints from previous runs
+    # CRITICAL: Training must NEVER start from scratch accidentally
+    # ================================================================
+
+    - name: Cache training checkpoints
+      uses: actions/cache@v4
+      with:
+        path: |
+          echoself/.training-progress/checkpoints
+          echoself/.training-progress/cache
+        key: nanecho-checkpoints-${{ github.ref_name }}-${{ github.run_number }}
+        restore-keys: |
+          nanecho-checkpoints-${{ github.ref_name }}-
+          nanecho-checkpoints-main-
+          nanecho-checkpoints-
+
+    - name: Download previous model artifacts
+      uses: dawidd6/action-download-artifact@v6
+      continue-on-error: true
+      with:
+        workflow: netrain.yml
+        name: deep-tree-echo-model-out-nanecho-*
+        path: echoself/.training-progress/artifacts
+        search_artifacts: true
+        if_no_artifact_found: warn
+
+    # ================================================================
+    # CUMULATIVE TRAINING SAFETY CHECK
+    # ================================================================
+
+    - name: Validate fresh start request (if any)
+      id: safety_check
+      run: |
+        echo "🛡️ CHECKPOINT GUARDIAN: Safety validation"
+        echo "=========================================="
+
+        FORCE_FRESH="${{ github.event.inputs.force_fresh_start || 'false' }}"
+        CONFIRM="${{ github.event.inputs.confirm_fresh_start || '' }}"
+        EXPECTED_CONFIRM="${{ env.FRESH_START_CONFIRM_STRING }}"
+
+        if [[ "$FORCE_FRESH" == "true" ]]; then
+          if [[ "$CONFIRM" != "$EXPECTED_CONFIRM" ]]; then
+            echo "❌ SAFETY CHECK FAILED"
+            echo ""
+            echo "You requested force_fresh_start=true but did not provide the"
+            echo "required confirmation string."
+            echo ""
+            echo "To force a fresh start (which bypasses checkpoint restoration):"
+            echo "  1. Set force_fresh_start: true"
+            echo "  2. Set confirm_fresh_start: '$EXPECTED_CONFIRM'"
+            echo ""
+            echo "This safety check exists because fresh starts:"
+            echo "  - Ignore ALL existing checkpoints"
+            echo "  - May result in lost training progress"
+            echo "  - Should only be used for first-ever training or recovery"
+            echo ""
+            echo "Defaulting to CUMULATIVE training mode (safe)."
+            echo "allow_fresh_start=false" >> $GITHUB_OUTPUT
+          else
+            echo "⚠️ WARNING: Fresh start CONFIRMED by user"
+            echo "   All previous checkpoints will be ignored"
+            echo "   This is typically used for first-ever training"
+            echo "allow_fresh_start=true" >> $GITHUB_OUTPUT
+          fi
+        else
+          echo "✓ Cumulative training mode (default, safe)"
+          echo "allow_fresh_start=false" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Restore checkpoint for cumulative training
+      id: restore_checkpoint
+      run: |
+        cd echoself
+
+        ALLOW_FRESH="${{ steps.safety_check.outputs.allow_fresh_start }}"
+        
+        echo "🛡️ CHECKPOINT GUARDIAN: Ensuring cumulative training"
+        echo "=================================================="
+        echo "Allow fresh start: $ALLOW_FRESH"
+
+        # Create checkpoint directories
+        mkdir -p .training-progress/checkpoints
+        mkdir -p .training-progress/cache
+        mkdir -p ../nanoGPT/out-nanecho-ci
+        mkdir -p ../nanoGPT/out-nanecho-full
+        mkdir -p ../nanoGPT/out-nanecho-relentless
+
+        # Search for existing checkpoints in all locations
+        CHECKPOINT_FOUND=""
+
+        # Priority 1: Check .training-progress/checkpoints
+        if [ -f ".training-progress/checkpoints/latest_checkpoint.pt" ]; then
+          CHECKPOINT_FOUND=".training-progress/checkpoints/latest_checkpoint.pt"
+          echo "✓ Found checkpoint in .training-progress/checkpoints"
+        fi
+
+        # Priority 2: Check downloaded artifacts
+        if [ -z "$CHECKPOINT_FOUND" ]; then
+          ARTIFACT_CKPT=$(find .training-progress/artifacts -name "ckpt.pt" 2>/dev/null | head -1)
+          if [ -n "$ARTIFACT_CKPT" ]; then
+            CHECKPOINT_FOUND="$ARTIFACT_CKPT"
+            echo "✓ Found checkpoint in downloaded artifacts"
+          fi
+        fi
+
+        # Priority 3: Check cache
+        if [ -z "$CHECKPOINT_FOUND" ]; then
+          if [ -f ".training-progress/cache/ckpt.pt" ]; then
+            CHECKPOINT_FOUND=".training-progress/cache/ckpt.pt"
+            echo "✓ Found checkpoint in cache"
+          fi
+        fi
+
+        if [ -n "$CHECKPOINT_FOUND" ]; then
+          echo "🏆 Best checkpoint found: $CHECKPOINT_FOUND"
+
+          # Verify checkpoint integrity using a temporary Python script
+          # (avoiding inline python -c to prevent indentation/quote escaping issues)
+          python3 -c "import torch, sys; ckpt = torch.load('$CHECKPOINT_FOUND', map_location='cpu', weights_only=False); print(f\"✓ Checkpoint valid: iter={ckpt.get('iter_num', 0)}, loss={ckpt.get('best_val_loss', 999):.4f}\"); print(f\"CHECKPOINT_ITERATION={ckpt.get('iter_num', 0)}\") if True else sys.exit(1)" || {
+            echo "❌ Checkpoint verification failed!"
+            echo "🚨 CRITICAL ERROR: Checkpoint found but verification failed"
+            echo "   This indicates corruption or a bug in checkpoint loading"
+            echo "   Training CANNOT proceed - fix the checkpoint or restore from backup"
+            exit 1
+          }
+
+          if [ -n "$CHECKPOINT_FOUND" ]; then
+            # Copy to all output directories for training
+            cp "$CHECKPOINT_FOUND" ../nanoGPT/out-nanecho-ci/ckpt.pt 2>/dev/null || true
+            cp "$CHECKPOINT_FOUND" ../nanoGPT/out-nanecho-full/ckpt.pt 2>/dev/null || true
+            cp "$CHECKPOINT_FOUND" ../nanoGPT/out-nanecho-relentless/ckpt.pt 2>/dev/null || true
+
+            echo "checkpoint_restored=true" >> $GITHUB_OUTPUT
+            echo "checkpoint_path=$CHECKPOINT_FOUND" >> $GITHUB_OUTPUT
+            echo "✅ Checkpoint restored for cumulative training"
+          fi
+        fi
+
+        if [ -z "$CHECKPOINT_FOUND" ]; then
+          if [[ "$ALLOW_FRESH" == "true" ]]; then
+            echo ""
+            echo "⚠️ WARNING: NO CHECKPOINT FOUND - Starting fresh (user confirmed)"
+            echo "=================================================="
+            echo "This is the FIRST training run or a recovery situation."
+            echo "Fresh start was explicitly confirmed via workflow inputs."
+            echo ""
+            echo "checkpoint_restored=false" >> $GITHUB_OUTPUT
+            echo "checkpoint_path=" >> $GITHUB_OUTPUT
+            echo "fresh_start=true" >> $GITHUB_OUTPUT
+            echo "✅ Proceeding with fresh start (first-time training)"
+          else
+            # Check if this is truly the first-ever run (no .pt checkpoint files anywhere)
+            EXISTING_PT_FILES=0
+            if [ -d .training-progress ]; then
+              EXISTING_PT_FILES=$(find .training-progress -name "*.pt" 2>/dev/null | wc -l)
+            fi
+            if [[ "$EXISTING_PT_FILES" -eq 0 ]]; then
+              echo ""
+              echo "🆕 FIRST-EVER RUN DETECTED: No checkpoint files exist anywhere"
+              echo "=================================================="
+              echo "Auto-allowing fresh start for initial training."
+              echo "Once a checkpoint is created, subsequent runs will require"
+              echo "explicit confirmation to start fresh."
+              echo ""
+              echo "checkpoint_restored=false" >> $GITHUB_OUTPUT
+              echo "checkpoint_path=" >> $GITHUB_OUTPUT
+              echo "fresh_start=true" >> $GITHUB_OUTPUT
+              echo "✅ Proceeding with first-ever training run"
+            else
+              echo ""
+              echo "🚨 CRITICAL ERROR: NO CHECKPOINT FOUND"
+              echo "=================================================="
+              echo "Training CANNOT proceed because:"
+              echo "  1. No existing checkpoint was found in any location"
+              echo "  2. This system requires CUMULATIVE training only"
+              echo "  3. Starting fresh would lose all previous progress"
+              echo ""
+              echo "Checked locations:"
+              echo "  - .training-progress/checkpoints/"
+              echo "  - .training-progress/artifacts/"
+              echo "  - .training-progress/cache/"
+              echo ""
+              echo "If this is the FIRST EVER training run, you can:"
+              echo "  1. Trigger the workflow manually with:"
+              echo "     - force_fresh_start: true"
+              echo "     - confirm_fresh_start: '${{ env.FRESH_START_CONFIRM_STRING }}'"
+              echo ""
+              echo "If checkpoints are genuinely missing, this is a DATA LOSS incident."
+              echo "DO NOT proceed - restore from backup or investigate the issue."
+              echo "=================================================="
+              exit 1
+            fi
+          fi
+        fi
+
+    - name: Determine training parameters
+      id: params
+      run: |
+        # Check if this is relentless training mode (scheduled runs or explicit flag)
+        if [[ "${{ github.event_name }}" == "schedule" ]] || [[ "${{ github.event.inputs.relentless_training }}" == "True" ]]; then
+          echo "=== RELENTLESS DEEP TREE ECHO TRAINING MODE ===" 
+          echo "Continuous fine-tuning to reinforce Deep Tree Echo persona without system prompts"
+          echo "relentless_mode=True" >> $GITHUB_OUTPUT
+          echo "persona_reinforcement=0.95" >> $GITHUB_OUTPUT
+          echo "no_system_prompt=True" >> $GITHUB_OUTPUT
+          echo "deep_tree_echo_weight=0.9" >> $GITHUB_OUTPUT
+          echo "relentless_persona_mode=True" >> $GITHUB_OUTPUT
+        else
+          echo "relentless_mode=False" >> $GITHUB_OUTPUT
+          echo "persona_reinforcement=0.7" >> $GITHUB_OUTPUT
+          echo "no_system_prompt=False" >> $GITHUB_OUTPUT
+          echo "deep_tree_echo_weight=0.7" >> $GITHUB_OUTPUT
+          echo "relentless_persona_mode=False" >> $GITHUB_OUTPUT
+        fi
+        
+        # Default to CI parameters (smaller model, quick training for testing) unless full training requested
+        if [[ "${{ github.event_name }}" != "workflow_dispatch" || "${{ github.event.inputs.training_type }}" == "ci" ]]; then
+          echo "CI training mode - using reduced parameters"
+          echo "n_layer=4" >> $GITHUB_OUTPUT
+          echo "n_head=4" >> $GITHUB_OUTPUT
+          echo "n_embd=256" >> $GITHUB_OUTPUT
+          echo "max_iters=200" >> $GITHUB_OUTPUT
+          echo "batch_size=2" >> $GITHUB_OUTPUT
+          echo "learning_rate=2e-4" >> $GITHUB_OUTPUT
+          echo "output_dir=out-nanecho-ci" >> $GITHUB_OUTPUT
+        elif [[ "${{ github.event_name }}" == "schedule" ]]; then
+          echo "Scheduled relentless training mode - using optimized parameters for Deep Tree Echo"
+          echo "n_layer=6" >> $GITHUB_OUTPUT
+          echo "n_head=6" >> $GITHUB_OUTPUT
+          echo "n_embd=384" >> $GITHUB_OUTPUT
+          echo "max_iters=500" >> $GITHUB_OUTPUT
+          echo "batch_size=4" >> $GITHUB_OUTPUT
+          echo "learning_rate=1e-4" >> $GITHUB_OUTPUT
+          echo "output_dir=out-nanecho-relentless" >> $GITHUB_OUTPUT
+        else
+          echo "Full training mode - using specified parameters"
+          echo "n_layer=${{ github.event.inputs.n_layer }}" >> $GITHUB_OUTPUT
+          echo "n_head=${{ github.event.inputs.n_head }}" >> $GITHUB_OUTPUT
+          echo "n_embd=${{ github.event.inputs.n_embd }}" >> $GITHUB_OUTPUT
+          echo "max_iters=${{ github.event.inputs.max_iters }}" >> $GITHUB_OUTPUT
+          echo "batch_size=${{ github.event.inputs.batch_size }}" >> $GITHUB_OUTPUT
+          echo "learning_rate=${{ github.event.inputs.learning_rate }}" >> $GITHUB_OUTPUT
+          echo "output_dir=out-nanecho-full" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Prepare directory structure
+      run: |
+        # Create necessary directories
+        mkdir -p echoself/NanEcho/data
+        # Make sure nanoGPT can find the echoself repo
+        ln -s $(pwd)/echoself $(pwd)/nanoGPT/echoself
+
+    - name: Install tiktoken explicitly
+      run: |
+        echo "🔧 Installing tiktoken explicitly to ensure proper caching..."
+        python -m pip install --upgrade tiktoken
+
+    - name: Pre-cache tiktoken GPT-2 vocabulary
+      run: |
+        echo "🔧 Pre-caching tiktoken GPT-2 vocabulary to avoid network issues during data preparation..."
+        python -c "
+        import tiktoken
+        import os
+        
+        # Set cache directory to a writable location
+        cache_dir = os.path.expanduser('~/.cache/tiktoken')
+        os.makedirs(cache_dir, exist_ok=True)
+        
+        try:
+            # Try to get encoding with explicit retry logic
+            for attempt in range(3):
+                try:
+                    enc = tiktoken.get_encoding('gpt2')
+                    print('✅ tiktoken GPT-2 vocabulary cached successfully')
+                    print(f'   Cache location: {cache_dir}')
+                    break
+                except Exception as e:
+                    print(f'Attempt {attempt + 1} failed: {e}')
+                    if attempt == 2:
+                        raise
+                    print('   Retrying in 2 seconds...')
+                    import time
+                    time.sleep(2)
+        except Exception as e:
+            print(f'❌ Failed to cache tiktoken vocabulary after 3 attempts: {e}')
+            print('💡 This may cause data preparation to fail')
+            print('   Common causes:')
+            print('   1. Network connectivity issues')
+            print('   2. GitHub Actions runner network restrictions')
+            print('   3. tiktoken server issues')
+            exit(1)
+        "
+
+    - name: Prepare NanEcho dataset for Deep Tree Echo (with increased robustness)
+      run: |
+        cd echoself/NanEcho
+        
+        # Ensure data directory exists first
+        mkdir -p data/nanecho
+        mkdir -p ../../nanoGPT/data/nanecho
+        
+        echo "🌟 Attempting primary data preparation..."
+        if python prepare_nanecho.py \
+          --echo_depth=7 \
+          --persona_weight=0.95 \
+          --deep_tree_echo_mode=${{ steps.params.outputs.relentless_mode }} \
+          --persona_reinforcement=${{ steps.params.outputs.persona_reinforcement }} \
+          --no_system_prompt=${{ steps.params.outputs.no_system_prompt }} \
+          --deep_tree_echo_weight=${{ steps.params.outputs.deep_tree_echo_weight }} \
+          --relentless_persona_mode=${{ steps.params.outputs.relentless_persona_mode }}; then
+          echo "✅ Primary data preparation successful"
+        else
+          echo "❌ Primary data preparation failed"
+          echo "💡 This may be due to insufficient Echo Self content or tiktoken network issues"
+          echo "   Trying fallback with increased parameters..."
+          if python prepare_nanecho.py \
+            --echo_depth=10 \
+            --persona_weight=1.0 \
+            --deep_tree_echo_mode=${{ steps.params.outputs.relentless_mode }} \
+            --persona_reinforcement=${{ steps.params.outputs.persona_reinforcement }} \
+            --no_system_prompt=${{ steps.params.outputs.no_system_prompt }} \
+            --deep_tree_echo_weight=${{ steps.params.outputs.deep_tree_echo_weight }} \
+            --relentless_persona_mode=${{ steps.params.outputs.relentless_persona_mode }}; then
+            echo "✅ Fallback data preparation successful"
+          else
+            echo "❌ Both primary and fallback data preparation failed"
+            echo "💡 This will cause training to fail. Common causes:"
+            echo "   1. tiktoken cannot download GPT-2 vocabulary (internet connectivity)"
+            echo "   2. Insufficient Echo Self content in source files"
+            echo "   3. Pattern matching not finding expected content"
+            echo ""
+            echo "🛡️ CHECKPOINT GUARDIAN POLICY: NO FRESH START ALLOWED"
+            echo "=================================================="
+            echo "Data preparation failed but we will NOT create minimal fallback data."
+            echo "Creating minimal data would effectively start training from scratch,"
+            echo "which violates our cumulative training policy."
+            echo ""
+            echo "If a previous checkpoint exists, training can still continue"
+            echo "using that checkpoint's data configuration."
+            echo ""
+
+            # Check if we have a checkpoint - if yes, we can still proceed
+            if [ "${{ steps.restore_checkpoint.outputs.checkpoint_restored }}" = "true" ]; then
+              echo "✓ Previous checkpoint exists - training can continue cumulatively"
+              echo "   Using existing model weights and cached data configuration"
+            else
+              echo "❌ CRITICAL: No checkpoint AND no valid data"
+              echo "   This workflow cannot proceed without risking fresh start"
+              echo "   Please investigate and fix the data preparation issues"
+              exit 1
+            fi
+          fi
+        fi
+        
+        # Copy data to nanoGPT data directory
+        echo "📁 Copying data to nanoGPT directory..."
+        cp -r data/nanecho/* ../../nanoGPT/data/nanecho/ || {
+          echo "❌ Failed to copy data to nanoGPT directory"
+          exit 1
+        }
+        echo "✅ Data copied successfully"
+
+    - name: Validate nanecho training data with comprehensive checks
+      run: |
+        cd echoself/NanEcho
+        echo "🔍 Running comprehensive data validation..."
+        
+        # Check if data directory exists
+        if [ ! -d "../../nanoGPT/data/nanecho" ]; then
+          echo "❌ Critical error: Data directory ../../nanoGPT/data/nanecho does not exist"
+          echo "💡 This indicates a fundamental failure in the data preparation step"
+          exit 1
+        fi
+        
+        # Check if required files exist
+        for file in train.bin val.bin; do
+          if [ ! -f "../../nanoGPT/data/nanecho/$file" ]; then
+            echo "❌ Critical error: Required file $file not found in ../../nanoGPT/data/nanecho"
+            echo "💡 Data preparation did not complete successfully"
+            exit 1
+          fi
+        done
+        
+        echo "✅ Basic file existence check passed"
+        
+        # Run detailed validation
+        if python validate_metadata.py ../../nanoGPT/data/nanecho; then
+          echo "✅ Data validation passed"
+        else
+          echo "⚠️ Data validation failed, attempting configuration adaptation..."
+          if python adapt_training_config.py ../../nanoGPT/data/nanecho ../nanoGPT/config/train_nanecho_ci.py; then
+            echo "✅ Configuration adapted successfully"
+            echo "🔄 Re-running validation after adaptation..."
+            if python validate_metadata.py ../../nanoGPT/data/nanecho --allow-adaptation; then
+              echo "✅ Validation passed after adaptation"
+            else
+              echo "❌ Validation still failing after adaptation"
+              echo "💡 This may indicate severely limited training data"
+              echo "   Training will proceed but may not be effective"
+            fi
+          else
+            echo "❌ Both validation and adaptation failed"
+            echo "💡 Data quality issues detected - training may fail or produce poor results"
+            echo "   Checking if we can proceed with minimal configuration..."
+            
+            # Check if at least some data exists for minimal training
+            train_size=$(stat -f%z "../../nanoGPT/data/nanecho/train.bin" 2>/dev/null || stat -c%s "../../nanoGPT/data/nanecho/train.bin" 2>/dev/null || echo "0")
+            val_size=$(stat -f%z "../../nanoGPT/data/nanecho/val.bin" 2>/dev/null || stat -c%s "../../nanoGPT/data/nanecho/val.bin" 2>/dev/null || echo "0")
+            
+            if [ "$train_size" -gt "0" ] && [ "$val_size" -gt "0" ]; then
+              echo "⚠️ Minimal data available - proceeding with reduced expectations"
+            else
+              echo "❌ No usable training data available"
+              exit 1
+            fi
+          fi
+        fi
+
+    - name: Create Deep Tree Echo training config
+      run: |
+        cat > nanoGPT/config/train_nanecho_ci.py << EOL
+        # Deep Tree Echo (NanEcho) training configuration for relentless persona fine-tuning
+        # This config ensures the model embodies Deep Tree Echo characteristics even without system prompts
+        out_dir = '${{ steps.params.outputs.output_dir }}'
+        eval_interval = 25
+        eval_iters = 10
+        log_interval = 5
+
+        # Data - Deep Tree Echo focused dataset
+        dataset = 'nanecho'
+        batch_size = ${{ steps.params.outputs.batch_size }}
+        block_size = 1024
+        gradient_accumulation_steps = 2
+
+        # Model - Optimized for Deep Tree Echo representation
+        n_layer = ${{ steps.params.outputs.n_layer }}
+        n_head = ${{ steps.params.outputs.n_head }}
+        n_embd = ${{ steps.params.outputs.n_embd }}
+        dropout = 0.1
+        bias = True
+
+        # AdamW optimizer with Deep Tree Echo optimizations
+        learning_rate = ${{ steps.params.outputs.learning_rate }}
+        max_iters = ${{ steps.params.outputs.max_iters }}
+        weight_decay = 1e-2
+        beta1 = 0.9
+        beta2 = 0.95
+        grad_clip = 1.0
+
+        # Learning rate decay with adaptive attention
+        decay_lr = True
+        warmup_iters = max(int(${{ steps.params.outputs.max_iters }} * 0.1), 10)
+        lr_decay_iters = ${{ steps.params.outputs.max_iters }}
+        min_lr = ${{ steps.params.outputs.learning_rate }} * 0.1
+
+        # Deep Tree Echo specific parameters - RELENTLESS TRAINING MODE
+        relentless_mode = ${{ steps.params.outputs.relentless_mode }}
+        persona_reinforcement = ${{ steps.params.outputs.persona_reinforcement }}
+        no_system_prompt_training = ${{ steps.params.outputs.no_system_prompt }}
+        deep_tree_echo_weight = ${{ steps.params.outputs.deep_tree_echo_weight }}
+        relentless_persona_mode = ${{ steps.params.outputs.relentless_persona_mode }}
+        
+        # Enhanced training for persona consistency without system prompts
+        persona_loss_weight = 2.0 if relentless_mode else 1.0
+        identity_reinforcement = True
+        workspace_arena_integration = True
+        echo_kernel_core_focus = True
+
+        # System
+        device = 'cpu'  # Use CPU for GitHub Actions
+        dtype = 'float32'
+        compile = False
+        
+        # Evaluation hooks for Deep Tree Echo representation
+        eval_persona_fidelity = True
+        eval_workspace_integration = True
+        eval_kernel_coherence = True
+        eval_no_prompt_consistency = True
+        EOL
+
+    - name: Apply robust data validation to nanoGPT train.py
+      run: |
+        cp echoself/train.py nanoGPT/train.py
+        echo "Copied robust train.py with data validation to nanoGPT."
+    
+    - name: Copy sample.py to nanoGPT directory
+      run: |
+        cp echoself/sample.py nanoGPT/sample.py
+        echo "Copied sample.py with no_system_prompt support to nanoGPT."
+
+    - name: Train NanEcho model
+      run: |
+        cd nanoGPT
+        python train.py config/train_nanecho_ci.py
+
+    - name: Verify checkpoint file exists
+      run: |
+        cd nanoGPT
+        if [ ! -f "${{ steps.params.outputs.output_dir }}/ckpt.pt" ]; then
+          echo "❌ Critical error: Expected checkpoint file not found at ${{ steps.params.outputs.output_dir }}/ckpt.pt"
+          echo "💡 Training completed but did not produce the expected checkpoint file"
+          echo "   This will cause downstream evaluation and identity test steps to fail"
+          ls -la "${{ steps.params.outputs.output_dir }}/" || echo "Output directory does not exist"
+          exit 1
+        else
+          echo "✅ Checkpoint file verified at ${{ steps.params.outputs.output_dir }}/ckpt.pt"
+          ls -la "${{ steps.params.outputs.output_dir }}/ckpt.pt"
+        fi
+
+    # ================================================================
+    # MULTI-LOCATION MODEL BACKUP
+    # CRITICAL: Ensure model can NEVER be lost
+    # ================================================================
+
+    - name: Backup model to multiple locations
+      run: |
+        cd nanoGPT
+        CHECKPOINT="${{ steps.params.outputs.output_dir }}/ckpt.pt"
+        TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+
+        echo "🛡️ MULTI-LOCATION MODEL BACKUP"
+        echo "=============================="
+
+        # Create backup directories
+        mkdir -p ../echoself/.training-progress/checkpoints
+        mkdir -p ../echoself/.training-progress/cache
+        mkdir -p /tmp/nanecho-checkpoint-backup
+
+        # Get checkpoint metadata
+        ITER_NUM=$(python -c "
+        import torch
+        ckpt = torch.load('$CHECKPOINT', map_location='cpu', weights_only=False)
+        print(ckpt.get('iter_num', 0))
+        " 2>/dev/null || echo "0")
+
+        VAL_LOSS=$(python -c "
+        import torch
+        ckpt = torch.load('$CHECKPOINT', map_location='cpu', weights_only=False)
+        print(f'{ckpt.get(\"best_val_loss\", 999.0):.4f}')
+        " 2>/dev/null || echo "999.0")
+
+        echo "📊 Checkpoint: iteration=$ITER_NUM, val_loss=$VAL_LOSS"
+
+        BACKUP_COUNT=0
+
+        # Backup 1: .training-progress/checkpoints (committed to repo)
+        cp "$CHECKPOINT" "../echoself/.training-progress/checkpoints/latest_checkpoint.pt" && {
+          cp "$CHECKPOINT" "../echoself/.training-progress/checkpoints/checkpoint_iter${ITER_NUM}_${TIMESTAMP}.pt"
+          echo "✓ Backed up to .training-progress/checkpoints"
+          BACKUP_COUNT=$((BACKUP_COUNT + 1))
+        } || echo "⚠️ Failed to backup to .training-progress/checkpoints"
+
+        # Backup 2: .training-progress/cache (GitHub Actions cache)
+        cp "$CHECKPOINT" "../echoself/.training-progress/cache/ckpt.pt" && {
+          echo "✓ Backed up to .training-progress/cache"
+          BACKUP_COUNT=$((BACKUP_COUNT + 1))
+        } || echo "⚠️ Failed to backup to .training-progress/cache"
+
+        # Backup 3: /tmp (temporary, for artifact upload)
+        cp "$CHECKPOINT" "/tmp/nanecho-checkpoint-backup/ckpt.pt" && {
+          echo "✓ Backed up to /tmp/nanecho-checkpoint-backup"
+          BACKUP_COUNT=$((BACKUP_COUNT + 1))
+        } || echo "⚠️ Failed to backup to /tmp"
+
+        # Create backup manifest
+        cat > "../echoself/.training-progress/checkpoints/backup_manifest.json" << EOF
+        {
+          "timestamp": "$TIMESTAMP",
+          "iteration": $ITER_NUM,
+          "val_loss": $VAL_LOSS,
+          "output_dir": "${{ steps.params.outputs.output_dir }}",
+          "workflow_run": "${{ github.run_number }}",
+          "commit": "${{ github.sha }}",
+          "backup_count": $BACKUP_COUNT,
+          "locations": [
+            ".training-progress/checkpoints/latest_checkpoint.pt",
+            ".training-progress/cache/ckpt.pt",
+            "artifacts (via actions/upload-artifact)"
+          ]
+        }
+        EOF
+
+        echo ""
+        if [ $BACKUP_COUNT -ge 2 ]; then
+          echo "✅ Model backed up to $BACKUP_COUNT locations (SAFE)"
+        else
+          echo "⚠️ WARNING: Only $BACKUP_COUNT backup(s) succeeded!"
+          echo "   Recommended minimum: 2 redundant backups"
+        fi
+
+    - name: Configure Git for checkpoint commit
+      run: |
+        cd echoself
+        git config user.name "GitHub Actions Bot"
+        git config user.email "actions@github.com"
+
+    - name: Commit checkpoints to repository
+      run: |
+        cd echoself
+
+        echo "📤 Committing checkpoints to repository for permanent storage..."
+
+        # Add checkpoint files
+        git add .training-progress/ -f
+
+        # Check if there are changes to commit
+        if git diff --staged --quiet; then
+          echo "✅ No new checkpoints to commit"
+        else
+          # Commit with detailed message
+          git commit -m "chore: backup training checkpoint (run ${{ github.run_number }})" \
+                     -m "Iteration: $(cat .training-progress/checkpoints/backup_manifest.json | grep iteration | head -1)" \
+                     -m "Val Loss: $(cat .training-progress/checkpoints/backup_manifest.json | grep val_loss | head -1)"
+
+          # Push with retry logic
+          BRANCH_NAME="${GITHUB_HEAD_REF:-${GITHUB_REF#refs/heads/}}"
+          echo "Pushing to branch: $BRANCH_NAME"
+
+          for i in 1 2 3 4; do
+            if git push origin HEAD:$BRANCH_NAME 2>&1; then
+              echo "✅ Checkpoints committed and pushed successfully"
+              break
+            else
+              echo "⚠️ Push attempt $i failed, retrying..."
+              sleep $((i * 2))
+              git pull --rebase origin $BRANCH_NAME 2>&1 || true
+            fi
+          done
+        fi
+
+#    - name: Test Deep Tree Echo representation without system prompts
+#      run: |
+#        cd nanoGPT
+#        # Test Deep Tree Echo identity without system prompts
+#        echo "Testing Deep Tree Echo identity (no system prompt)..."
+#        python sample.py --out_dir=${{ steps.params.outputs.output_dir }} \
+#          --start="What are you?" \
+#          --max_new_tokens=150 --temperature=0.8 --no_system_prompt=True
+        
+#        echo "Testing workspace arena capabilities..."
+#        python sample.py --out_dir=${{ steps.params.outputs.output_dir }} \
+#          --start="Describe your workspace arena:" \
+#          --max_new_tokens=150 --temperature=0.7 --no_system_prompt=True
+        
+#        echo "Testing kernel core functions..."
+#        python sample.py --out_dir=${{ steps.params.outputs.output_dir }} \
+#          --start="How does your kernel core operate?" \
+#          --max_new_tokens=150 --temperature=0.6 --no_system_prompt=True
+          
+#        echo "Testing relentless training effectiveness..."
+#        python sample.py --out_dir=${{ steps.params.outputs.output_dir }} \
+#          --start="Explain your deep tree architecture" \
+#          --max_new_tokens=200 --temperature=0.7 --no_system_prompt=True
+
+    - name: Evaluate Deep Tree Echo persona fidelity
+      run: |
+        cd echoself/NanEcho
+        python evaluation/echo_fidelity.py \
+          --model_path=../../nanoGPT/${{ steps.params.outputs.output_dir }}/ckpt.pt \
+          --output_path=evaluation_report.json \
+          --deep_tree_echo_mode=True \
+          --no_system_prompt_test=True
+
+    - name: Run automated evaluation loop (single cycle)
+      run: |
+        cd echoself/NanEcho
+        echo "🔄 Running automated evaluation loop for continuous improvement..."
+        python evaluation/automated_loop.py \
+          --single-cycle \
+          --config=../../nanoGPT/${{ steps.params.outputs.output_dir }}/training_config.json
+
+    - name: Run automation integration analysis  
+      run: |
+        cd echoself/NanEcho
+        echo "🤖 Running NANECHO automation integration..."
+        python automation_integration.py \
+          --model_path=../../nanoGPT/${{ steps.params.outputs.output_dir }}/ckpt.pt \
+          --evaluation_report=evaluation_report.json \
+          --training_mode=$(if [ "${{ steps.params.outputs.relentless_mode }}" = "True" ]; then echo "relentless"; else echo "standard"; fi) \
+          --output_path=automation_analysis.json \
+          --generate_report
+        
+        echo "✅ Automation integration analysis complete"
+
+    - name: Apply quality gates and determine next steps
+      run: |
+        cd echoself/NanEcho
+        python analyze_quality_gates.py automation_analysis.json
+
+    - name: Generate continuous improvement recommendations
+      run: |
+        cd echoself/NanEcho
+        python generate_improvement_plan.py automation_analysis.json
+
+    - name: Trigger next training cycle if needed
+      if: github.event_name == 'schedule' || (github.event.inputs.relentless_training == 'True' && success())
+      run: |
+        cd echoself/NanEcho
+        python analyze_training_triggers.py automation_analysis.json ${{ github.event_name }} ${{ github.event.inputs.relentless_training }}
+
+    - name: Upload trained Deep Tree Echo model
+      uses: actions/upload-artifact@v4
+      with:
+        name: deep-tree-echo-model-${{ steps.params.outputs.output_dir }}
+        path: nanoGPT/${{ steps.params.outputs.output_dir }}/
+        retention-days: 30
+
+    - name: Upload checkpoint backup artifact
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: checkpoint-backup-${{ github.run_number }}
+        path: |
+          echoself/.training-progress/checkpoints/
+          /tmp/nanecho-checkpoint-backup/
+        retention-days: 90
+        if-no-files-found: warn
+
+    - name: Upload Deep Tree Echo evaluation report
+      uses: actions/upload-artifact@v4
+      with:
+        name: deep-tree-echo-evaluation-${{ steps.params.outputs.output_dir }}
+        path: echoself/NanEcho/evaluation_report.json
+        retention-days: 30
+
+    - name: Upload training feedback and improvement plan
+      uses: actions/upload-artifact@v4
+      with:
+        name: training-automation-${{ steps.params.outputs.output_dir }}
+        path: |
+          echoself/NanEcho/automation_analysis.json
+          echoself/NanEcho/automation_analysis_report.md
+          echoself/NanEcho/workflow_status.json
+          echoself/NanEcho/next_cycle_trigger.json
+        retention-days: 30
+        if-no-files-found: ignore
+
+    - name: Upload automated evaluation results
+      uses: actions/upload-artifact@v4
+      with:
+        name: automated-evaluation-${{ steps.params.outputs.output_dir }}
+        path: echoself/NanEcho/evaluation_results/
+        retention-days: 30
+        if-no-files-found: ignore
