@@ -15,6 +15,12 @@ from typing import Dict, Any, Tuple, List
 n_layer = 8           # Layers optimized for 48M parameter target (OEIS A000081: a(7)=48)
 n_head = 8            # Attention heads aligned with 48M architecture
 n_embd = 512          # Embedding dimension for 48M parameter model
+                      # Approximate parameter count (with bias=True, block_size=1024,
+                      # vocab_size=50257, tied LM head):
+                      #   token_embd: 50257*512 ≈ 25.7M
+                      #   position_embd: 1024*512 ≈ 0.5M
+                      #   8 layers × (4*512² attn + 8*512² MLP + LN) ≈ 25.2M
+                      #   Total ≈ 51.5M  (branded as ~48M per OEIS A000081 a(7)=48)
 dropout = 0.1         # Moderate dropout for generalization
 bias = True           # Use bias for better Echo Self characteristics
 block_size = 1024     # Sufficient context for Echo Self reasoning
