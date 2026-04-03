@@ -1,9 +1,9 @@
-# Dependency Audit Report - 2026-04-02 03:00:25 UTC
+# Dependency Audit Report - 2026-04-03 03:07:20 UTC
 
 ## Dependency Analysis Summary
 ```json
 {
-  "timestamp": "2026-04-02T03:00:23.127Z",
+  "timestamp": "2026-04-03T03:07:18.444Z",
   "summary": {
     "totalDependencies": 27,
     "totalDevDependencies": 27,
@@ -186,7 +186,7 @@ node_modules/lodash-es
   Depends on vulnerable versions of @chevrotain/gast
   Depends on vulnerable versions of lodash-es
   node_modules/chevrotain
-    chevrotain-allstar  >=0.3.0
+    chevrotain-allstar  0.3.0 - 0.3.1
     Depends on vulnerable versions of chevrotain
     node_modules/chevrotain-allstar
     langium  >=2.0.0-next.239179f
