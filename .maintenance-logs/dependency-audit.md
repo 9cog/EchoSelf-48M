@@ -1,9 +1,9 @@
-# Dependency Audit Report - 2026-04-07 03:07:24 UTC
+# Dependency Audit Report - 2026-04-08 03:07:21 UTC
 
 ## Dependency Analysis Summary
 ```json
 {
-  "timestamp": "2026-04-07T03:07:22.592Z",
+  "timestamp": "2026-04-08T03:07:19.114Z",
   "summary": {
     "totalDependencies": 27,
     "totalDevDependencies": 27,
@@ -173,8 +173,7 @@ lodash-es  <=4.17.23
 Severity: high
 lodash vulnerable to Code Injection via `_.template` imports key names - https://github.com/advisories/GHSA-r5fr-rjxr-66jc
 lodash vulnerable to Prototype Pollution via array path bypass in `_.unset` and `_.omit` - https://github.com/advisories/GHSA-f23m-r3pf-42rh
-fix available via `npm audit fix --force`
-Will install mermaid@10.9.5, which is a breaking change
+fix available via `npm audit fix`
 node_modules/lodash-es
   @chevrotain/cst-dts-gen  11.0.0 - 11.2.0
   Depends on vulnerable versions of @chevrotain/gast
@@ -191,16 +190,10 @@ node_modules/lodash-es
     chevrotain-allstar  0.3.0 - 0.3.1
     Depends on vulnerable versions of chevrotain
     node_modules/chevrotain-allstar
-    langium  >=2.0.0-next.239179f
+    langium  2.0.0-next.239179f - 4.2.1
     Depends on vulnerable versions of chevrotain
     Depends on vulnerable versions of chevrotain-allstar
     node_modules/langium
-      @mermaid-js/parser  *
-      Depends on vulnerable versions of langium
-      node_modules/@mermaid-js/parser
-        mermaid  >=11.0.0-alpha.1
-        Depends on vulnerable versions of @mermaid-js/parser
-        node_modules/mermaid
 
 minimatch  9.0.0 - 9.0.6
 Severity: high
@@ -219,13 +212,13 @@ node_modules/@typescript-eslint/typescript-estree/node_modules/minimatch
     Depends on vulnerable versions of @typescript-eslint/typescript-estree
     Depends on vulnerable versions of @typescript-eslint/utils
     node_modules/@typescript-eslint/type-utils
-    @typescript-eslint/utils  6.16.0 - 7.5.0
-    Depends on vulnerable versions of @typescript-eslint/typescript-estree
-    node_modules/@typescript-eslint/utils
       @typescript-eslint/eslint-plugin  6.16.0 - 7.5.0
       Depends on vulnerable versions of @typescript-eslint/type-utils
       Depends on vulnerable versions of @typescript-eslint/utils
       node_modules/@typescript-eslint/eslint-plugin
+    @typescript-eslint/utils  6.16.0 - 7.5.0
+    Depends on vulnerable versions of @typescript-eslint/typescript-estree
+    node_modules/@typescript-eslint/utils
 
 path-to-regexp  <0.1.13
 Severity: high
@@ -276,13 +269,10 @@ yaml is vulnerable to Stack Overflow via deeply nested YAML collections - https:
 fix available via `npm audit fix`
 node_modules/yaml
 
-31 vulnerabilities (9 moderate, 22 high)
+29 vulnerabilities (9 moderate, 20 high)
 
 To address issues that do not require attention, run:
   npm audit fix
-
-To address all issues possible (including breaking changes), run:
-  npm audit fix --force
 
 Some issues need review, and may require choosing
 a different dependency.
