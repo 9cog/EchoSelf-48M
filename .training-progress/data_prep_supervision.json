@@ -3,7 +3,7 @@
   "persona_enforced": "Deep Tree Echo",
   "session_log": [
     {
-      "timestamp": "2026-04-16T16:35:27.585963",
+      "timestamp": "2026-04-16T20:18:25.905370",
       "phase": "data_preparation",
       "config": {
         "persona_weight": "0.95",
