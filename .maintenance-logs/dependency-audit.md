@@ -1,9 +1,9 @@
-# Dependency Audit Report - 2026-04-22 03:08:09 UTC
+# Dependency Audit Report - 2026-04-23 03:08:12 UTC
 
 ## Dependency Analysis Summary
 ```json
 {
-  "timestamp": "2026-04-22T03:08:07.029Z",
+  "timestamp": "2026-04-23T03:08:10.296Z",
   "summary": {
     "totalDependencies": 27,
     "totalDevDependencies": 27,
@@ -120,6 +120,9 @@ DOMPurify contains a Cross-site Scripting vulnerability - https://github.com/adv
 DOMPurify ADD_ATTR predicate skips URI validation - https://github.com/advisories/GHSA-cjmm-f4jc-qw8r
 DOMPurify USE_PROFILES prototype pollution allows event handlers - https://github.com/advisories/GHSA-cj63-jhhr-wcxv
 DOMPurify's ADD_TAGS function form bypasses FORBID_TAGS due to short-circuit evaluation - https://github.com/advisories/GHSA-39q2-94rc-95cp
+DOMPurify: FORBID_TAGS bypassed by function-based ADD_TAGS predicate (asymmetry with FORBID_ATTR fix) - https://github.com/advisories/GHSA-h7mw-gpvr-xq4m
+DOMPurify has a SAFE_FOR_TEMPLATES bypass in RETURN_DOM mode - https://github.com/advisories/GHSA-crv5-9vww-q3g8
+DOMPurify: Prototype Pollution to XSS Bypass via CUSTOM_ELEMENT_HANDLING Fallback - https://github.com/advisories/GHSA-v9jr-rg53-9pgp
 fix available via `npm audit fix`
 node_modules/dompurify
 
@@ -263,6 +266,16 @@ Undici has CRLF Injection in undici via `upgrade` option - https://github.com/ad
 fix available via `npm audit fix`
 node_modules/undici
 
+uuid  <14.0.0
+Severity: moderate
+uuid: Missing buffer bounds check in v3/v5/v6 when buf is provided - https://github.com/advisories/GHSA-w5hq-g745-h8pq
+fix available via `npm audit fix --force`
+Will install mermaid@9.1.7, which is a breaking change
+node_modules/uuid
+  mermaid  >=9.2.0-rc1
+  Depends on vulnerable versions of uuid
+  node_modules/mermaid
+
 
 yaml  2.0.0 - 2.8.2
 Severity: moderate
@@ -270,10 +283,13 @@ yaml is vulnerable to Stack Overflow via deeply nested YAML collections - https:
 fix available via `npm audit fix`
 node_modules/yaml
 
-29 vulnerabilities (9 moderate, 20 high)
+31 vulnerabilities (11 moderate, 20 high)
 
 To address issues that do not require attention, run:
   npm audit fix
+
+To address all issues possible (including breaking changes), run:
+  npm audit fix --force
 
 Some issues need review, and may require choosing
 a different dependency.
