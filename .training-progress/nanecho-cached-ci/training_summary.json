@@ -1,7 +1,7 @@
 {
-  "workflow_run": "135",
+  "workflow_run": "137",
   "training_type": ".training-progress/nanecho-cached-ci",
-  "completed_at": "2026-05-05T08:32:34.550500",
+  "completed_at": "2026-05-05T20:17:11.011732",
   "parameters": {
     "max_iters": 500,
     "batch_size": 2,
@@ -14,15 +14,15 @@
     "total_checkpoints": 10,
     "total_size_mb": 2574.348497390747,
     "total_size_gb": 2.5140122044831514,
-    "best_quality_score": 1996800.7809745546,
-    "best_val_loss": 0.00046173597977031025,
+    "best_quality_score": 2150400.7811417202,
+    "best_val_loss": 0.00021918910566455453,
     "cache_dir": ".training-progress/nanecho-cached-ci/cache"
   },
   "best_checkpoint": {
-    "id": "ckpt_20260505_083230_13000_22deff1b_9470fbb7",
-    "quality_score": 1996800.7809745546,
-    "val_loss": 0.00046173597977031025,
-    "iteration": 13000,
-    "created_at": "2026-05-05T08:32:30.249252"
+    "id": "ckpt_20260505_201707_14000_22deff1b_9470fbb7",
+    "quality_score": 2150400.7811417202,
+    "val_loss": 0.00021918910566455453,
+    "iteration": 14000,
+    "created_at": "2026-05-05T20:17:07.217209"
   }
 }
