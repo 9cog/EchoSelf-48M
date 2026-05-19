@@ -1,9 +1,9 @@
-# Dependency Audit Report - 2026-05-18 06:13:02 UTC
+# Dependency Audit Report - 2026-05-19 03:11:08 UTC
 
 ## Dependency Analysis Summary
 ```json
 {
-  "timestamp": "2026-05-18T06:12:59.996Z",
+  "timestamp": "2026-05-19T03:11:06.265Z",
   "summary": {
     "totalDependencies": 27,
     "totalDevDependencies": 27,
@@ -296,13 +296,19 @@ fix available via `npm audit fix`
 node_modules/uuid
 
 
+ws  8.0.0 - 8.20.0
+Severity: moderate
+ws: Uninitialized memory disclosure - https://github.com/advisories/GHSA-58qx-3vcg-4xpx
+fix available via `npm audit fix`
+node_modules/ws
+
 yaml  2.0.0 - 2.8.2
 Severity: moderate
 yaml is vulnerable to Stack Overflow via deeply nested YAML collections - https://github.com/advisories/GHSA-48c2-rrv3-qjmp
 fix available via `npm audit fix`
 node_modules/yaml
 
-34 vulnerabilities (2 low, 12 moderate, 20 high)
+35 vulnerabilities (2 low, 13 moderate, 20 high)
 
 To address issues that do not require attention, run:
   npm audit fix
