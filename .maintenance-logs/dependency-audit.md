@@ -1,9 +1,9 @@
-# Dependency Audit Report - 2026-05-21 03:11:46 UTC
+# Dependency Audit Report - 2026-05-22 03:11:30 UTC
 
 ## Dependency Analysis Summary
 ```json
 {
-  "timestamp": "2026-05-21T03:11:44.457Z",
+  "timestamp": "2026-05-22T03:11:28.910Z",
   "summary": {
     "totalDependencies": 27,
     "totalDevDependencies": 27,
@@ -289,7 +289,7 @@ Undici has CRLF Injection in undici via `upgrade` option - https://github.com/ad
 fix available via `npm audit fix`
 node_modules/undici
 
-uuid  11.0.0 - 11.1.0
+uuid  <11.1.1
 Severity: moderate
 uuid: Missing buffer bounds check in v3/v5/v6 when buf is provided - https://github.com/advisories/GHSA-w5hq-g745-h8pq
 fix available via `npm audit fix`
