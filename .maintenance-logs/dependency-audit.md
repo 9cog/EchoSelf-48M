@@ -1,9 +1,9 @@
-# Dependency Audit Report - 2026-05-22 03:11:30 UTC
+# Dependency Audit Report - 2026-05-23 03:08:59 UTC
 
 ## Dependency Analysis Summary
 ```json
 {
-  "timestamp": "2026-05-22T03:11:28.910Z",
+  "timestamp": "2026-05-23T03:08:57.053Z",
   "summary": {
     "totalDependencies": 27,
     "totalDevDependencies": 27,
@@ -233,13 +233,13 @@ node_modules/@typescript-eslint/typescript-estree/node_modules/minimatch
     Depends on vulnerable versions of @typescript-eslint/typescript-estree
     Depends on vulnerable versions of @typescript-eslint/utils
     node_modules/@typescript-eslint/type-utils
+    @typescript-eslint/utils  6.16.0 - 7.5.0
+    Depends on vulnerable versions of @typescript-eslint/typescript-estree
+    node_modules/@typescript-eslint/utils
       @typescript-eslint/eslint-plugin  6.16.0 - 7.5.0
       Depends on vulnerable versions of @typescript-eslint/type-utils
       Depends on vulnerable versions of @typescript-eslint/utils
       node_modules/@typescript-eslint/eslint-plugin
-    @typescript-eslint/utils  6.16.0 - 7.5.0
-    Depends on vulnerable versions of @typescript-eslint/typescript-estree
-    node_modules/@typescript-eslint/utils
 
 path-to-regexp  <0.1.13
 Severity: high
@@ -262,6 +262,18 @@ Severity: moderate
 PostCSS has XSS via Unescaped </style> in its CSS Stringify Output - https://github.com/advisories/GHSA-qx2v-qp2m-jg93
 fix available via `npm audit fix`
 node_modules/postcss
+
+qs  6.11.1 - 6.15.1
+Severity: moderate
+qs has a remotely triggerable DoS: qs.stringify crashes with TypeError on null/undefined entries in comma-format arrays when encodeValuesOnly is set - https://github.com/advisories/GHSA-q8mj-m7cp-5q26
+fix available via `npm audit fix`
+node_modules/qs
+  body-parser  1.20.3 - 1.20.4 || 2.0.0-beta.1 - 2.0.2
+  Depends on vulnerable versions of qs
+  node_modules/body-parser
+  express  4.21.0 - 4.22.1 || 5.0.0-alpha.1 - 5.0.1
+  Depends on vulnerable versions of qs
+  node_modules/express
 
 tar  <=7.5.10
 Severity: high
@@ -308,7 +320,7 @@ yaml is vulnerable to Stack Overflow via deeply nested YAML collections - https:
 fix available via `npm audit fix`
 node_modules/yaml
 
-35 vulnerabilities (2 low, 13 moderate, 20 high)
+38 vulnerabilities (2 low, 16 moderate, 20 high)
 
 To address issues that do not require attention, run:
   npm audit fix
