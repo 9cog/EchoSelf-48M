@@ -41,4 +41,3 @@ export function renderPromptTemplate(template: PromptTemplate): string {
   }
   return lines.join("\n");
 }
-

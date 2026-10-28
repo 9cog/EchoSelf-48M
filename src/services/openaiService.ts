@@ -61,7 +61,8 @@ export class DeepTreeEchoOpenAIService {
   }): string {
     const toroidal = this.getToroidalSystemPrompt(options);
     let systemPrompt = toroidal ?? DEEP_TREE_ECHO_PERSONA;
-    systemPrompt += CREATIVITY_INSTRUCTIONS[options.creativityLevel ?? "balanced"];
+    systemPrompt +=
+      CREATIVITY_INSTRUCTIONS[options.creativityLevel ?? "balanced"];
     if (options.systemPrompt) {
       systemPrompt += `\n\n${options.systemPrompt}`;
     }

@@ -4,14 +4,18 @@
  *
  * Bridges the TypeScript frontend with Python cognitive engines
  * (RelevanceRealizationEngine and VirtualEmbodiment) via child_process.
- * When Python or an engine is unavailable the call fails with an error;
- * no heuristic or template results are substituted.
+ * When Python is unavailable, relevance evaluation fails with an error (no
+ * heuristic scores are substituted); embodiment grounding is instead written
+ * by the language model from a prompt template (validated JSON), with the
+ * engine-measured fields left null.
  */
 
 import { execFile } from "child_process";
 import { promisify } from "util";
 import * as path from "path";
 import process from "node:process";
+import { completePrompt, parseModelJson } from "./modelProvider";
+import { renderPromptTemplate } from "./promptTemplates";
 
 const execFileAsync = promisify(execFile);
 
@@ -43,8 +47,12 @@ export interface EmbodiedGrounding {
     modality: string;
     affordance: string;
   }>;
-  bodySchemaRelevance: number;
-  predictionError: number;
+  /** Measured by the Python engine; null when grounded by the model. */
+  bodySchemaRelevance: number | null;
+  /** Measured by the Python engine; null when grounded by the model. */
+  predictionError: number | null;
+  /** Which engine produced this grounding. */
+  source?: "virtual-embodiment" | "model";
 }
 
 export interface BridgeStatus {
@@ -201,7 +209,8 @@ print(json.dumps(out))
    * Ground language in embodied metaphors by calling the Python
    * VirtualEmbodiment engine.
    *
-   * Throws when Python is unavailable.
+   * Without Python, the language model grounds the text from the
+   * embodied-grounding prompt template.
    */
   public async groundLanguageInEmbodiment(
     language: string,
@@ -215,11 +224,69 @@ print(json.dumps(out))
     }
 
     if (!this.pythonAvailable) {
-      throw new Error(
-        "Embodiment engine unavailable: Python 3 with numpy is required"
-      );
+      return this.groundLanguageWithModel(language, environmentContext);
     }
     return this.groundLanguagePython(language, environmentContext);
+  }
+
+  /** Model-written grounding (prompt template + validated JSON). */
+  private async groundLanguageWithModel(
+    language: string,
+    environmentContext: Record<string, unknown>
+  ): Promise<EmbodiedGrounding> {
+    const instructions = renderPromptTemplate({
+      id: "embodied-grounding",
+      purpose:
+        "Ground the given language in embodied, sensorimotor metaphors (4E cognition: embodied, embedded, enacted, extended).",
+      structure: [
+        'Reply with ONLY a JSON object: {"groundedMetaphors": string[], "sensoriMotorMappings": [{"concept": string, "modality": "vision" | "audio" | "touch" | "proprioception" | "interoception", "affordance": string}]}',
+        "Map each concept in the language that has a bodily basis to the modality it grounds through and the action it affords.",
+        "Write one grounded metaphor per mapping.",
+      ],
+      data: {
+        language,
+        "environment context": JSON.stringify(environmentContext),
+      },
+      styleExamples: [
+        'groundedMetaphors: ["The concept grasp grounds through touch: understanding as holding"]',
+      ],
+    });
+
+    const raw = await completePrompt(instructions, language, {
+      temperature: 0.4,
+      maxTokens: 600,
+    });
+    const data = parseModelJson<{
+      groundedMetaphors?: unknown;
+      sensoriMotorMappings?: unknown;
+    }>(raw);
+    if (
+      !Array.isArray(data.groundedMetaphors) ||
+      !Array.isArray(data.sensoriMotorMappings)
+    ) {
+      throw new Error(
+        "The model's grounding is missing groundedMetaphors or sensoriMotorMappings."
+      );
+    }
+    const mappings = data.sensoriMotorMappings
+      .filter(
+        (m): m is Record<string, unknown> => typeof m === "object" && m !== null
+      )
+      .map(m => ({
+        concept: String(m.concept ?? ""),
+        modality: String(m.modality ?? ""),
+        affordance: String(m.affordance ?? ""),
+      }))
+      .filter(m => m.concept && m.modality);
+
+    return {
+      originalLanguage: language,
+      groundedMetaphors: data.groundedMetaphors.map(String),
+      sensoriMotorMappings: mappings,
+      bodySchemaRelevance: null,
+      predictionError: null,
+      source: "model",
+    };
   }
 
   private async groundLanguagePython(
@@ -298,7 +365,10 @@ print(json.dumps(out))
     const { stdout } = await execFileAsync(this.pythonPath, ["-c", script], {
       timeout: 15000,
     });
-    return JSON.parse(stdout.trim()) as EmbodiedGrounding;
+    return {
+      ...(JSON.parse(stdout.trim()) as EmbodiedGrounding),
+      source: "virtual-embodiment",
+    };
   }
 }
 

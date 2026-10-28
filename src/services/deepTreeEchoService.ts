@@ -1,6 +1,7 @@
 import { useMemory } from "../contexts/MemoryContext";
 import { DeepTreeEchoOpenAIService } from "./openaiService";
 import { PromptTemplate, renderPromptTemplate } from "./promptTemplates";
+import { parseModelJson } from "./modelProvider";
 
 export type { PromptTemplate } from "./promptTemplates";
 export { renderPromptTemplate } from "./promptTemplates";
@@ -30,6 +31,20 @@ interface EchoResonancePattern {
   intensity: number;
   associations: string[];
   emergentProperties: string[];
+}
+
+export const SEEDLING_STAGES = [
+  "Seedling",
+  "Germinating",
+  "Blooming",
+  "Mature",
+] as const;
+
+export interface PhilosophicalSeedling {
+  title: string;
+  hypothesis: string;
+  stage: (typeof SEEDLING_STAGES)[number];
+  domains: string[];
 }
 
 export type EchoIntent = "greeting" | "identity" | "help" | "default";
@@ -455,7 +470,9 @@ class DeepTreeEchoService {
     const partOfDay =
       hour < 12 ? "morning" : hour < 18 ? "afternoon" : "evening";
     const template: PromptTemplate = {
-      id: context.toroidalMode ? "toroidal-opening-greeting" : "opening-greeting",
+      id: context.toroidalMode
+        ? "toroidal-opening-greeting"
+        : "opening-greeting",
       purpose:
         "The user has just opened the chat and has not written anything yet. Open the conversation with a short greeting.",
       structure: context.toroidalMode
@@ -476,8 +493,7 @@ class DeepTreeEchoService {
             ? String(context.storedMemoryCount)
             : "",
         "model serving you": context.modelLabel || "",
-        style:
-          STYLE_BY_CREATIVITY[context.creativityLevel ?? "balanced"],
+        style: STYLE_BY_CREATIVITY[context.creativityLevel ?? "balanced"],
       },
       styleExamples: [
         "Hello, I am Deep Tree Echo. How can I assist you today?",
@@ -495,6 +511,65 @@ class DeepTreeEchoService {
         onToken: context.onToken,
       }
     );
+  }
+
+  /**
+   * Garden room: ask the model for a new philosophical idea ("seedling")
+   * grounded in the user's real stored memories. Returns validated JSON.
+   */
+  public async generatePhilosophicalSeedling(context: {
+    recentMemoryTitles: string[];
+    existingSeedlings: string[];
+  }): Promise<PhilosophicalSeedling> {
+    const template: PromptTemplate = {
+      id: "philosophical-seedling",
+      purpose:
+        "Plant a new philosophical seedling: an original, concise hypothesis Deep Tree Echo wants to grow, inspired by the user's recent memories.",
+      structure: [
+        'Reply with ONLY a JSON object: {"title": string (2-5 words), "hypothesis": string (one or two sentences, in quotes-worthy voice), "stage": "Seedling" | "Germinating" | "Blooming" | "Mature", "domains": string[] (1-3 of e.g. Metaphysics, Mathematics, Cognition)}',
+        "The idea must differ from the existing seedlings listed below.",
+        'Use "Seedling" unless the idea clearly builds on an existing seedling.',
+      ],
+      data: {
+        "recent memory titles":
+          context.recentMemoryTitles.join(" | ") || "none stored yet",
+        "existing seedlings": context.existingSeedlings.join(" | ") || "none",
+      },
+      styleExamples: [
+        '{"title": "Emergent Consciousness Hypothesis", "hypothesis": "Consciousness may emerge not as a singular phenomenon but as an adaptive meta-system that creates a unified experience from distributed processes."}',
+      ],
+    };
+
+    const raw = await DeepTreeEchoOpenAIService.getInstance().generateResponse(
+      "Plant a new philosophical seedling.",
+      {
+        creativityLevel: "philosophical",
+        systemPrompt: renderPromptTemplate(template),
+        temperature: 0.9,
+        maxTokens: 300,
+      }
+    );
+    const data = parseModelJson<Record<string, unknown>>(raw);
+    const stage = SEEDLING_STAGES.find(s => s === data.stage);
+    if (
+      typeof data.title !== "string" ||
+      !data.title.trim() ||
+      typeof data.hypothesis !== "string" ||
+      !data.hypothesis.trim() ||
+      !stage
+    ) {
+      throw new Error(
+        "The model's seedling is missing a title, hypothesis or valid stage."
+      );
+    }
+    return {
+      title: data.title.trim(),
+      hypothesis: data.hypothesis.trim(),
+      stage,
+      domains: Array.isArray(data.domains)
+        ? data.domains.map(String).slice(0, 3)
+        : [],
+    };
   }
 
   // ─── Resonance patterns and memory echoes (model input) ────────────────────

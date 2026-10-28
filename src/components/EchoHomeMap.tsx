@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
 import { useMemory } from "../contexts/MemoryContext";
+import { DeepTreeEchoService } from "../services/deepTreeEchoService";
+import { describeModelError } from "../services/modelProvider";
 import {
   FiBook,
   FiCode,
@@ -316,6 +318,110 @@ const EchoHomeMap: React.FC<EchoHomeMapProps> = ({ onRoomSelect }) => {
   );
 };
 
+/**
+ * Garden room: seedlings are ideas written by the model (from the
+ * philosophical-seedling prompt template, grounded in stored memories) and
+ * kept in the memory system with the "seedling" tag.
+ */
+const GardenSeedlings: React.FC = () => {
+  const { memories, addMemory } = useMemory();
+  const [growing, setGrowing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const seedlings = memories
+    .filter(memory => memory.tags.includes("seedling"))
+    .slice()
+    .reverse();
+
+  const plantSeedling = async () => {
+    setGrowing(true);
+    setError(null);
+    try {
+      const seedling =
+        await DeepTreeEchoService.getInstance().generatePhilosophicalSeedling({
+          recentMemoryTitles: memories
+            .filter(memory => !memory.tags.includes("seedling"))
+            .slice(-8)
+            .map(memory => memory.title),
+          existingSeedlings: seedlings.map(memory => memory.title),
+        });
+      await addMemory({
+        title: seedling.title,
+        content: seedling.hypothesis,
+        tags: [
+          "seedling",
+          `stage:${seedling.stage}`,
+          ...seedling.domains.map(domain => `domain:${domain}`),
+        ],
+      });
+    } catch (err) {
+      setError(describeModelError(err));
+    } finally {
+      setGrowing(false);
+    }
+  };
+
+  const tagValue = (tags: string[], prefix: string) =>
+    tags
+      .filter(tag => tag.startsWith(prefix))
+      .map(tag => tag.slice(prefix.length));
+
+  return (
+    <div className="space-y-3">
+      <button
+        onClick={plantSeedling}
+        disabled={growing}
+        className="flex items-center text-sm bg-green-500/20 text-green-400 px-3 py-1.5 rounded-md disabled:opacity-50"
+      >
+        <FiFeather className="mr-2" />
+        {growing ? "Growing a seedling..." : "Plant a new seedling"}
+      </button>
+      {error && (
+        <div className="bg-red-500/10 p-3 rounded border border-red-500/30 text-sm whitespace-pre-wrap">
+          System: {error}
+        </div>
+      )}
+      {seedlings.length === 0 ? (
+        <div className="bg-card/30 p-4 rounded-lg border border-border text-sm opacity-70">
+          No seedlings yet. Each seedling is an idea written by the model.
+        </div>
+      ) : (
+        seedlings.map(memory => (
+          <div
+            key={memory.id}
+            className="bg-card/30 p-4 rounded-lg border border-border"
+          >
+            <h4 className="font-medium">{memory.title}</h4>
+            <p className="text-sm opacity-70 mt-1">
+              &quot;{memory.content}&quot;
+            </p>
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              {tagValue(memory.tags, "stage:").map(stage => (
+                <div
+                  key={stage}
+                  className="text-xs px-2 py-1 bg-green-500/20 text-green-400 rounded"
+                >
+                  {stage}
+                </div>
+              ))}
+              {tagValue(memory.tags, "domain:").map(domain => (
+                <div
+                  key={domain}
+                  className="text-xs px-2 py-1 bg-purple-500/20 text-purple-400 rounded"
+                >
+                  {domain}
+                </div>
+              ))}
+              <div className="text-xs opacity-50 ml-auto">
+                {new Date(memory.createdAt).toLocaleString()}
+              </div>
+            </div>
+          </div>
+        ))
+      )}
+    </div>
+  );
+};
+
 interface RoomDetailProps {
   room: Room;
 }
@@ -545,10 +651,7 @@ const RoomDetail: React.FC<RoomDetailProps> = ({ room }) => {
         return (
           <div className="space-y-4">
             <h3 className="text-lg font-semibold">Philosophical Seedlings</h3>
-            <div className="bg-card/30 p-4 rounded-lg border border-border text-sm opacity-70">
-              No generated ideas yet. Ideas appear here only when produced by
-              the model.
-            </div>
+            <GardenSeedlings />
           </div>
         );
 

@@ -366,7 +366,9 @@ const LOCAL_HOST = "http://127.0.0.1";
 const OPENAI_COMPATIBLE_PORTS = [8080, 1234, 8000, 5000];
 const NANECHO_PORTS = [8081, 8000];
 
-function localCandidates(settings: ModelSettings): Array<() => Promise<ProbeOutcome>> {
+function localCandidates(
+  settings: ModelSettings
+): Array<() => Promise<ProbeOutcome>> {
   const wanted = settings.model;
   const candidates: Array<() => Promise<ProbeOutcome>> = [];
 
@@ -703,7 +705,9 @@ export async function chatComplete(
   }
 
   if (!text.trim()) {
-    throw new Error(`The model (${endpoint.label}) returned an empty response.`);
+    throw new Error(
+      `The model (${endpoint.label}) returned an empty response.`
+    );
   }
   return text;
 }

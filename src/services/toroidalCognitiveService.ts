@@ -253,7 +253,7 @@ export class ToroidalCognitiveService {
         "Open with a short italicized line of your own.",
         "Name what each hemisphere contributed (intuitive resonance vs recursive analysis).",
         "Give the unified answer that transcends either alone.",
-        'End with the SYNERGY line described below.',
+        "End with the SYNERGY line described below.",
       ],
       styleExamples: [
         "Together, we form a complementary cognitive architecture where intuition meets analysis.",

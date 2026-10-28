@@ -229,7 +229,10 @@ export const OrchestratorProvider: React.FC<{ children: React.ReactNode }> = ({
             mem0ai.initialize(storedApiKey || undefined, data.session.user.id);
             setState(prev => ({ ...prev, memoryIntegrationStatus: "active" }));
           } catch (error) {
-            setState(prev => ({ ...prev, memoryIntegrationStatus: "inactive" }));
+            setState(prev => ({
+              ...prev,
+              memoryIntegrationStatus: "inactive",
+            }));
             logSystemEvent({
               type: "system_event",
               description: "Error initializing memory system",
