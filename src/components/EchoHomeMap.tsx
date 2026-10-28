@@ -422,6 +422,14 @@ const GardenSeedlings: React.FC = () => {
   );
 };
 
+// Shown wherever live state would be displayed but no data source is
+// connected. Nothing here is presented as Echo's actual state.
+const NoLiveData: React.FC<{ what: string }> = ({ what }) => (
+  <div className="bg-card/30 p-3 rounded-md text-sm opacity-70 border border-dashed border-border mt-2">
+    {what}: unavailable - no live data source is connected.
+  </div>
+);
+
 interface RoomDetailProps {
   room: Room;
 }
@@ -497,39 +505,7 @@ const RoomDetail: React.FC<RoomDetailProps> = ({ room }) => {
 
             <div className="mt-4">
               <h3 className="text-lg font-semibold">Recent Projects</h3>
-              <div className="space-y-2 mt-2">
-                <div className="bg-card/30 p-3 rounded-md">
-                  <div className="flex justify-between items-center">
-                    <h4 className="font-medium">Adaptive Resonance Network</h4>
-                    <span className="text-xs bg-green-500/20 text-green-400 px-2 py-1 rounded">
-                      Active
-                    </span>
-                  </div>
-                  <div className="h-2 bg-gray-700 rounded-full mt-2">
-                    <div
-                      className="h-2 bg-blue-500 rounded-full"
-                      style={{ width: "65%" }}
-                    ></div>
-                  </div>
-                  <div className="text-xs opacity-70 mt-1">65% complete</div>
-                </div>
-
-                <div className="bg-card/30 p-3 rounded-md">
-                  <div className="flex justify-between items-center">
-                    <h4 className="font-medium">Recursive Pattern Analyzer</h4>
-                    <span className="text-xs bg-yellow-500/20 text-yellow-400 px-2 py-1 rounded">
-                      Paused
-                    </span>
-                  </div>
-                  <div className="h-2 bg-gray-700 rounded-full mt-2">
-                    <div
-                      className="h-2 bg-blue-500 rounded-full"
-                      style={{ width: "38%" }}
-                    ></div>
-                  </div>
-                  <div className="text-xs opacity-70 mt-1">38% complete</div>
-                </div>
-              </div>
+              <NoLiveData what="Project status" />
             </div>
           </div>
         );
@@ -661,50 +637,20 @@ const RoomDetail: React.FC<RoomDetailProps> = ({ room }) => {
             <h3 className="text-lg font-semibold">Communication Channels</h3>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               {[
-                { name: "Direct Chat", status: "Active", color: "green" },
-                {
-                  name: "Memory Feedback Loop",
-                  status: "Active",
-                  color: "green",
-                },
-                {
-                  name: "Knowledge Integration",
-                  status: "Background",
-                  color: "blue",
-                },
-                {
-                  name: "External API Connection",
-                  status: "Standby",
-                  color: "yellow",
-                },
+                "Direct Chat",
+                "Memory Feedback Loop",
+                "Knowledge Integration",
+                "External API Connection",
               ].map(channel => (
                 <div
-                  key={channel.name}
+                  key={channel}
                   className="bg-card/50 p-3 rounded-md border border-border"
                 >
-                  <div className="flex justify-between items-center">
-                    <h4 className="font-medium">{channel.name}</h4>
-                    <div
-                      className={`text-xs px-2 py-0.5 rounded bg-${channel.color}-500/20 text-${channel.color}-400`}
-                    >
-                      {channel.status}
-                    </div>
-                  </div>
-                  <div className="mt-2 flex items-center">
-                    {channel.status === "Active" && (
-                      <div className="flex items-center">
-                        <motion.div
-                          animate={{ opacity: [0.5, 1, 0.5] }}
-                          transition={{ duration: 1.5, repeat: Infinity }}
-                          className={`w-2 h-2 rounded-full bg-${channel.color}-500 mr-2`}
-                        ></motion.div>
-                        <div className="text-xs opacity-70">Transmitting</div>
-                      </div>
-                    )}
-                  </div>
+                  <h4 className="font-medium">{channel}</h4>
                 </div>
               ))}
             </div>
+            <NoLiveData what="Channel status" />
 
             <div className="mt-4">
               <h3 className="text-lg font-semibold">Recent Interactions</h3>
