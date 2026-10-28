@@ -18,7 +18,8 @@
 ; Columns (in order) are:
 ; * expression (emotion) class
 ; * blender emotion animation name
-; * probability of selecting this animation from this class
+; * usual weight of this animation within this class (given to the
+;   model as a hint; the model makes the actual choice, see express.scm)
 ; * min intensity of expression
 ; * max intensity of expression
 ; * min duration of expression
@@ -163,7 +164,8 @@
 ; Columns (in order) are:
 ; * expression (emotion) class
 ; * blender gesture animation name
-; * probability of selecting this animation from this class
+; * usual weight of this animation within this class (given to the
+;   model as a hint; the model makes the actual choice, see express.scm)
 ; * min intensity of gesture
 ; * max intensity of gesture
 ; * min number of repetitions of this gesture

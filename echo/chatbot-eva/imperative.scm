@@ -82,8 +82,12 @@
 (define-public (imperative-process imp)
 "
   Process imperative IMP, which should be a SentenceNode.
+  Returns the list of actions that were performed, as strings (possibly
+  empty).
+  No reply is generated here; the caller asks the model for one.
 "
 	(define do-dbg-prt #t)
+	(define performed '())
 
 	; Make the current sentence visible to everyone.
 	(StateLink current-sentence imp)
@@ -117,7 +121,7 @@
 	(cog-execute! obj-semantic-model-rule-1)
 	(cog-execute! obj-semantic-model-rule-2)
 
-	; Perform the action, and print a reply.
+	; Perform the action.
 	(let* ((act-do-do (cog-execute! action-rule-ao))
 			(action-list (cog-outgoing-set act-do-do))
 		)
@@ -130,7 +134,10 @@
 		; development. So report any errors.
 		(catch #t
 			(lambda ()
-				(for-each cog-evaluate! action-list))
+				(for-each cog-evaluate! action-list)
+				; Record what was actually done (as text, for the model).
+				(set! performed
+					(map (lambda (a) (format #f "~a" a)) action-list)))
 			(lambda (key . args)
 				(display "Exception: ") (display key) (newline)
 				(display args) (newline)
@@ -145,12 +152,9 @@
 			(cog-extract-recursive! (ListLink current-action x)))
 				action-list)
 
-		; XXX replace the dont-know reply by ChatScript or something.
 		(if (null? action-list)
-			(begin
-				(State (Anchor "Chatbot: ChatbotEvaAction")
-					(Concept "Chatbot: NoResult"))
-				(display "I don't know how to do that.\n")))
+			(State (Anchor "Chatbot: ChatbotEvaAction")
+				(Concept "Chatbot: NoResult")))
 
 		(State (Anchor "Chatbot: ChatbotEva")
 			(Concept "Chatbot: ProcessFinished"))
@@ -161,9 +165,7 @@
 	(StateLink current-imperative (WordNode "foobar"))
 	(StateLink current-action (WordNode "foobar"))
 
-	; Set the return value to be #<unspecified>, which avoids printing
-	; of the return value.  (if #f #f) has the same effect.
-	*unspecified*
+	performed
 )
 
 ;--------------------------------------------------------------------

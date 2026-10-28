@@ -186,25 +186,38 @@ const SystemMonitor: React.FC<SystemMonitorProps> = ({
                         <div className="text-xs opacity-70 mb-1">
                           Memory Usage
                         </div>
-                        <div className="h-2 bg-gray-700 rounded-full">
-                          <div
-                            className={`h-2 rounded-full ${
-                              orchestrator.state.systemHealthStatus
-                                .memoryUsage > 80
-                                ? "bg-red-500"
-                                : orchestrator.state.systemHealthStatus
-                                      .memoryUsage > 60
-                                  ? "bg-yellow-500"
-                                  : "bg-green-500"
-                            }`}
-                            style={{
-                              width: `${orchestrator.state.systemHealthStatus.memoryUsage}%`,
-                            }}
-                          ></div>
-                        </div>
-                        <div className="text-right text-xs mt-1">
-                          {orchestrator.state.systemHealthStatus.memoryUsage}%
-                        </div>
+                        {orchestrator.state.systemHealthStatus.memoryUsage ===
+                        null ? (
+                          <div className="text-right text-xs mt-1 opacity-70">
+                            Unavailable in this browser
+                          </div>
+                        ) : (
+                          <>
+                            <div className="h-2 bg-gray-700 rounded-full">
+                              <div
+                                className={`h-2 rounded-full ${
+                                  orchestrator.state.systemHealthStatus
+                                    .memoryUsage > 80
+                                    ? "bg-red-500"
+                                    : orchestrator.state.systemHealthStatus
+                                          .memoryUsage > 60
+                                      ? "bg-yellow-500"
+                                      : "bg-green-500"
+                                }`}
+                                style={{
+                                  width: `${orchestrator.state.systemHealthStatus.memoryUsage}%`,
+                                }}
+                              ></div>
+                            </div>
+                            <div className="text-right text-xs mt-1">
+                              {
+                                orchestrator.state.systemHealthStatus
+                                  .memoryUsage
+                              }
+                              %
+                            </div>
+                          </>
+                        )}
                       </div>
 
                       <div className="text-xs">

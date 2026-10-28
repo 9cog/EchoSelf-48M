@@ -110,8 +110,12 @@ export class AIService {
             temperature: options.temperature ?? 0.7,
             max_tokens: options.maxTokens,
           });
+          const text = completion.choices[0]?.message?.content;
+          if (!text) {
+            throw new Error("The model returned an empty response.");
+          }
           return {
-            text: completion.choices[0]?.message?.content || "",
+            text,
             source: "openai",
             metadata: { model },
           };

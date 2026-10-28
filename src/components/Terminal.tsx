@@ -5,6 +5,8 @@ import { WebLinksAddon } from "xterm-addon-web-links";
 import { useAIChat, type AIModel } from "../services/aiChatService";
 import { supabase } from "../services/supabaseClient";
 import { setTerminalExecutionFunction } from "../contexts/OrchestratorContext";
+import { useMemory } from "../contexts/MemoryContext";
+import { useAppStore } from "../store/appStore";
 import "xterm/css/xterm.css";
 
 const Terminal = () => {
@@ -23,6 +25,15 @@ const Terminal = () => {
   const [currentChat, setCurrentChat] = useState<string>("default");
   const [streamingResponse, setStreamingResponse] = useState<boolean>(false);
   const aiChat = useAIChat();
+
+  // Real stored memories and project files. Refs keep them current for the
+  // executor registered with the orchestrator at mount time.
+  const { memories } = useMemory();
+  const { files } = useAppStore();
+  const memoriesRef = useRef(memories);
+  memoriesRef.current = memories;
+  const filesRef = useRef(files);
+  filesRef.current = files;
 
   // Command autocomplete
   const [tabCompletions, setTabCompletions] = useState<string[]>([]);
@@ -427,7 +438,7 @@ const Terminal = () => {
   // Function to be exposed to the orchestrator for external terminal command execution
   const executeTerminalCommand = async (command: string): Promise<string> => {
     if (!xtermRef.current) {
-      return "Terminal not initialized";
+      throw new Error("Terminal not initialized: command not executed");
     }
 
     // Capture the output in a string
@@ -513,13 +524,13 @@ const Terminal = () => {
         break;
       case "mkdir":
         term.write(
-          `mkdir: command simulated (would create directory: ${args[1] || ""})\r\n`
+          `mkdir: not executed (no filesystem executor in this browser terminal)\r\n`
         );
         writePrompt();
         break;
       case "touch":
         term.write(
-          `touch: command simulated (would create file: ${args[1] || ""})\r\n`
+          `touch: not executed (no filesystem executor in this browser terminal)\r\n`
         );
         writePrompt();
         break;
@@ -544,12 +555,15 @@ const Terminal = () => {
       { cmd: "help", desc: "Show this help" },
       { cmd: "clear", desc: "Clear the terminal" },
       { cmd: "echo [text]", desc: "Display text" },
-      { cmd: "ls [path]", desc: "List files (simulated)" },
+      { cmd: "ls", desc: "List project files" },
       { cmd: "pwd", desc: "Print working directory" },
       { cmd: "cd [path]", desc: "Change directory (simulated)" },
-      { cmd: "mkdir [dir]", desc: "Create directory (simulated)" },
-      { cmd: "touch [file]", desc: "Create file (simulated)" },
-      { cmd: "memory", desc: "Show memory system status" },
+      { cmd: "mkdir [dir]", desc: "Not available (no filesystem executor)" },
+      { cmd: "touch [file]", desc: "Not available (no filesystem executor)" },
+      {
+        cmd: "memory [list|clear]",
+        desc: "Memory status / list stored memories",
+      },
       {
         cmd: "aichat [message]",
         desc: "Chat with AI (use -h for more options)",
@@ -625,11 +639,18 @@ const Terminal = () => {
       aiChat.clearChat(currentChat);
       term.write(`Cleared chat history for "${currentChat}"\r\n`);
     } else if (args[1] === "list") {
-      // List memory (simulated)
-      term.write("Available memory records (simulated):\r\n");
-      term.write("  - Echo state memory block (active)\r\n");
-      term.write("  - Neural pattern storage (32 records)\r\n");
-      term.write("  - Hypergraph connections (128 nodes)\r\n");
+      // List the memories actually stored in the memory system
+      const stored = memoriesRef.current;
+      if (stored.length === 0) {
+        term.write("No memory records stored.\r\n");
+      } else {
+        term.write(`Stored memory records (${stored.length}):\r\n`);
+        stored.slice(-20).forEach(memory => {
+          term.write(
+            `  - ${memory.title} [${memory.tags.join(", ")}] (${new Date(memory.createdAt).toLocaleString()})\r\n`
+          );
+        });
+      }
     }
 
     writePrompt();
@@ -669,10 +690,21 @@ const Terminal = () => {
   const lsCommand = (_args: string[]) => {
     if (!xtermRef.current) return;
 
-    // Simulated directory listing
-    xtermRef.current.write(
-      "\x1b[1;34mdir1\x1b[0m  \x1b[1;34mdir2\x1b[0m  \x1b[1;34mnodes\x1b[0m  \x1b[1;32mfile.txt\x1b[0m  \x1b[1;32mREADME.md\x1b[0m\r\n"
-    );
+    // List the project files held in the app store
+    const projectFiles = filesRef.current;
+    if (projectFiles.length === 0) {
+      xtermRef.current.write("(no project files)\r\n");
+    } else {
+      xtermRef.current.write(
+        projectFiles
+          .map(file =>
+            file.type === "directory"
+              ? `\x1b[1;34m${file.name}\x1b[0m`
+              : `\x1b[1;32m${file.name}\x1b[0m`
+          )
+          .join("  ") + "\r\n"
+      );
+    }
     writePrompt();
   };
 

@@ -672,33 +672,6 @@ proper atomese.
 	(NumberNode (cog-name face-concept))
 )
 
-;; Randomly select a face out of the crowd.
-(DefineLink
-	(DefinedSchema "Select random face")
-	(RandomChoice (DefinedSchema "Get acknowledged faces")))
-
-;; Randomly glance at someone (who we are not currently making
-;; eye-contact with)
-(DefineLink
-	(DefinedPredicate "Select random glance target")
-	(SequentialAnd
-		; Recursive loop, keep picking, while the current glance target
-		; is the same as the current interaction target.
-		(TrueLink
-			(PutLink (StateLink glance-state (VariableNode "$face-id"))
-				(DefinedSchemaNode "Select random face")))
-		(EqualLink
-			(Get
-				(TypedVariable (Variable "$face-id") (Type "NumberNode"))
-				(StateLink glance-state (VariableNode "$face-id")))
-			(Get
-				(TypedVariable (Variable "$face-id") (Type "NumberNode"))
-				(StateLink eye-contact-state (VariableNode "$face-id")))
-		)
-		(DefinedPredicateNode "More than one face visible")
-		(DefinedPredicateNode "Select random glance target")
-	))
-
 ;; Update the room empty/full status; update the list of acknowledged
 ;; faces.
 (DefineLink
@@ -835,27 +808,18 @@ proper atomese.
 				(ListLink (Variable "$face-id")))
 		)))
 
-;; Select a face at random, and glance at it.
+;; The model picks some other face (not the eye-contact face), and
+;; Eva glances at it.  See face-choice.scm.
 (DefineLink
-	(DefinedPredicate "glance at random face")
-	(SequentialAnd
-		(DefinedPredicate "Select random glance target")
-		(Put
-			(DefinedPredicate "glance and ack")
-			(Get
-				(TypedVariable (Variable "$face-id") (Type "NumberNode"))
-				(State glance-state (Variable "$face-id")))
-		)
-	))
+	(DefinedPredicate "glance at other face")
+	(Evaluation (GroundedPredicate "scm: model-glance-at-face") (ListLink)))
 
-;; Glance at one of the newly-arrived faces.
-;; If more than one new arrival, pick one randomly.
+;; Glance at one of the newly-arrived faces; if more than one new
+;; arrival, the model picks which one.
 (DefineLink
-	(DefinedSchema "glance at new person")
-	(Put
-		(DefinedPredicate "glance and ack")
-		(RandomChoice (DefinedSchema "New arrivals"))
-	))
+	(DefinedPredicate "glance at new person")
+	(Evaluation (GroundedPredicate "scm: model-glance-at-new-person")
+		(ListLink)))
 
 
 (DefineLink
@@ -869,13 +833,11 @@ proper atomese.
 		)))
 
 ;; Glance at the last known location of a face that is no longer
-;; visible.
+;; visible; if several left, the model picks which one.
 (DefineLink
-	(DefinedSchema "glance at lost face")
-	(Put
-		(DefinedPredicate "glance at departure")
-		(RandomChoice (DefinedSchema "New departures"))
-	))
+	(DefinedPredicate "glance at lost face")
+	(Evaluation (GroundedPredicate "scm: model-glance-at-lost-face")
+		(ListLink)))
 
 ; ------------------------------------------------------
 
@@ -902,8 +864,9 @@ proper atomese.
 				;(ListLink (Variable "$face-id")))
 		)))
 
-;; Change the eye-contact target to a face picked randomly from the
-;; crowd. (Caution: this might randomly pick the existing face...)
+;; Change the eye-contact target to a face picked by the model from
+;; the crowd (it may keep the existing face).  On model failure this
+;; is false, and the current target is kept.
 ;;
 ;; This only sets the eye-contact state variable; this does NOT
 ;; actually cause the robot to look at them.  Use the schema
@@ -911,10 +874,9 @@ proper atomese.
 (DefineLink
 	(DefinedPredicate "Change interaction")
 	(SequentialAnd
-		; Pick a face at random...
-		(True (Put
-			(DefinedPredicate "Set interaction target")
-			(DefinedSchema "Select random face")))
+		; The model picks a face...
+		(Evaluation (GroundedPredicate "scm: model-change-interaction")
+			(ListLink))
 
 		; Diagnostic print
 		(Evaluation (GroundedPredicate "scm: print-msg-face")
@@ -929,13 +891,13 @@ proper atomese.
 (DefineLink
 	(DefinedPredicate "interact with new person")
 	; XXX Double-check that the "New arrivals" list is non-empty;
-	; some OpenPsi bug sometimes sends us here, and the RandomChoice
-	; crashes if the list is empty.
+	; some OpenPsi bug sometimes sends us here.
 	(SequentialAnd
 		(DefinedPredicateNode "Did someone arrive?")
-		(True (Put (DefinedPredicate "Set interaction target")
-			; If more than one new arrival, pick one randomly.
-			(RandomChoice (DefinedSchema "New arrivals")))))
+		; If more than one new arrival, the model picks one. False
+		; (and no new target) if the model fails.
+		(Evaluation (GroundedPredicate "scm: model-interact-with-new-person")
+			(ListLink)))
 )
 
 ;; Set eye-contact face to the requested face.
@@ -960,7 +922,6 @@ proper atomese.
 (define-public current-demo-mode (Anchor "Current Demo Mode"))
 (define default-mode (Concept "Default Mode"))
 (define reasoning-mode (Concept "Reasoning Mode"))
-(define philosophy-mode (Concept "Philosophy Mode"))
 (define saliency-mode (Concept "Saliency Mode"))
 
 (State current-demo-mode default-mode)
@@ -970,10 +931,13 @@ proper atomese.
 "
   This is the default mode. All the rules are given a weight of 0.9.
 "
-	; Turn these off by default
+	; Turn these off by default.  The aiml and random_sentence_* rules
+	; produce scripted or corpus-sampled sentences rather than model
+	; output, so they are never enabled.
 	(define rules-not-to-be-enabled
 		(map (lambda (s) (string-append psi-prefix-str s))
-		(list "aiml" "random_sentence_blogs" "saliency-tracking")))
+		(list "aiml" "random_sentence_blogs" "random_sentence_pkd"
+			"random_sentence_kurzweil" "saliency-tracking")))
 
 	(psi-controller-occupy)
 
@@ -1032,13 +996,6 @@ proper atomese.
 	(enable-demo-rules (list "saliency-tracking"))
 )
 
-(define-public (enable-philosophy-demo)
-"
-  Enables the random_sentence_pkd and random_sentence_blogs rules.
-"
-	(enable-demo-rules (list "random_sentence_pkd" "random_sentence_kurzweil"))
-)
-
 (define-public (enable-pln-demo)
 "
   Enables the openpsi-pln rule.
@@ -1073,10 +1030,6 @@ proper atomese.
 		((equal? m "reasoning-demo")
 			(enable-pln-demo)
 			(State current-demo-mode reasoning-mode)
-		)
-		((equal? m "philosophy-demo")
-			(enable-philosophy-demo)
-			(State current-demo-mode philosophy-mode)
 		)
 		((equal? m "saliency-demo")
 			(enable-saliency-demo)

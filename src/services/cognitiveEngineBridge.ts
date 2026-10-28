@@ -4,7 +4,8 @@
  *
  * Bridges the TypeScript frontend with Python cognitive engines
  * (RelevanceRealizationEngine and VirtualEmbodiment) via child_process.
- * Provides graceful fallback when Python is unavailable.
+ * When Python or an engine is unavailable the call fails with an error;
+ * no heuristic or template results are substituted.
  */
 
 import { execFile } from "child_process";
@@ -95,7 +96,7 @@ export class CognitiveEngineBridge {
       this.pythonAvailable = false;
       this.pythonVersion = null;
       console.warn(
-        "CognitiveEngineBridge: Python 3 or numpy not available. Using TypeScript fallbacks."
+        "CognitiveEngineBridge: Python 3 or numpy not available. Cognitive engines are unavailable."
       );
       return false;
     }
@@ -123,8 +124,7 @@ export class CognitiveEngineBridge {
    * Evaluate the relevance of a concept within a given context by calling
    * the Python RelevanceRealizationEngine.
    *
-   * Falls back to a heuristic TypeScript implementation when Python is
-   * unavailable.
+   * Throws when Python is unavailable.
    */
   public async evaluateRelevance(
     conceptId: string,
@@ -139,10 +139,12 @@ export class CognitiveEngineBridge {
       await this.checkPythonAvailability();
     }
 
-    if (this.pythonAvailable) {
-      return this.evaluateRelevancePython(conceptId, conceptData, context);
+    if (!this.pythonAvailable) {
+      throw new Error(
+        "Relevance engine unavailable: Python 3 with numpy is required"
+      );
     }
-    return this.evaluateRelevanceFallback(conceptId, conceptData, context);
+    return this.evaluateRelevancePython(conceptId, conceptData, context);
   }
 
   private async evaluateRelevancePython(
@@ -182,72 +184,15 @@ if results:
         }
     }
 else:
-    out = {
-        "conceptId": '${conceptId}',
-        "relevanceScore": 0,
-        "criteria": {"goalAlignment":0,"predictivePower":0,"cognitiveEconomy":0,"noveltyValue":0,"contextualFit":0},
-        "opponentProcessStates": {"explorationExploitation":0.5,"breadthDepth":0.5,"speedAccuracy":0.5,"certaintyOpenness":0.6}
-    }
+    sys.exit("RelevanceRealizationEngine returned no result")
 
 print(json.dumps(out))
 `;
 
-    try {
-      const { stdout } = await execFileAsync(this.pythonPath, ["-c", script], {
-        timeout: 15000,
-      });
-      return JSON.parse(stdout.trim()) as RelevanceEvaluation;
-    } catch (error) {
-      console.error(
-        "Python relevance evaluation failed, using fallback:",
-        error
-      );
-      return this.evaluateRelevanceFallback(conceptId, conceptData, context);
-    }
-  }
-
-  private evaluateRelevanceFallback(
-    conceptId: string,
-    conceptData: Record<string, unknown>,
-    context: {
-      goals?: string[];
-      noveltyNeeded?: boolean;
-      precisionNeeded?: boolean;
-    }
-  ): RelevanceEvaluation {
-    // Heuristic fallback when Python is not available
-    const complexity = (conceptData.complexity as number) ?? 0.5;
-    const cognitiveEconomy = 1.0 / (1.0 + complexity);
-
-    const goalAlignment = context.goals && context.goals.length > 0 ? 0.5 : 0.3;
-    const noveltyValue = context.noveltyNeeded ? 0.7 : 0.4;
-    const predictivePower = 0.5;
-    const contextualFit = 0.7;
-
-    const relevanceScore =
-      goalAlignment * 0.3 +
-      predictivePower * 0.25 +
-      cognitiveEconomy * 0.2 +
-      noveltyValue * 0.15 +
-      contextualFit * 0.1;
-
-    return {
-      conceptId,
-      relevanceScore: Math.round(relevanceScore * 10000) / 10000,
-      criteria: {
-        goalAlignment,
-        predictivePower,
-        cognitiveEconomy: Math.round(cognitiveEconomy * 10000) / 10000,
-        noveltyValue,
-        contextualFit,
-      },
-      opponentProcessStates: {
-        explorationExploitation: 0.5,
-        breadthDepth: 0.5,
-        speedAccuracy: 0.5,
-        certaintyOpenness: 0.6,
-      },
-    };
+    const { stdout } = await execFileAsync(this.pythonPath, ["-c", script], {
+      timeout: 15000,
+    });
+    return JSON.parse(stdout.trim()) as RelevanceEvaluation;
   }
 
   // ---------- Virtual Embodiment ----------
@@ -256,8 +201,7 @@ print(json.dumps(out))
    * Ground language in embodied metaphors by calling the Python
    * VirtualEmbodiment engine.
    *
-   * Falls back to a template-based TypeScript implementation when Python
-   * is unavailable.
+   * Throws when Python is unavailable.
    */
   public async groundLanguageInEmbodiment(
     language: string,
@@ -270,10 +214,12 @@ print(json.dumps(out))
       await this.checkPythonAvailability();
     }
 
-    if (this.pythonAvailable) {
-      return this.groundLanguagePython(language, environmentContext);
+    if (!this.pythonAvailable) {
+      throw new Error(
+        "Embodiment engine unavailable: Python 3 with numpy is required"
+      );
     }
-    return this.groundLanguageFallback(language, environmentContext);
+    return this.groundLanguagePython(language, environmentContext);
   }
 
   private async groundLanguagePython(
@@ -334,14 +280,14 @@ for word in words:
 metaphors = [
     f"The concept grounds through {m['modality']} as {m['concept']}"
     for m in mappings
-] or [f"Language '{language[:50]}' maps to embodied spatial reasoning"]
+]
 
 prediction_error = float(result.get('prediction_error', 0.0))
 
 out = {
     'originalLanguage': language,
     'groundedMetaphors': metaphors,
-    'sensoriMotorMappings': mappings or [{'concept': 'abstract', 'modality': 'proprioception', 'affordance': 'spatial_reasoning'}],
+    'sensoriMotorMappings': mappings,
     'bodySchemaRelevance': float(proprio['energy']),
     'predictionError': round(prediction_error, 4)
 }
@@ -349,84 +295,10 @@ out = {
 print(json.dumps(out))
 `;
 
-    try {
-      const { stdout } = await execFileAsync(this.pythonPath, ["-c", script], {
-        timeout: 15000,
-      });
-      return JSON.parse(stdout.trim()) as EmbodiedGrounding;
-    } catch (error) {
-      console.error(
-        "Python embodiment grounding failed, using fallback:",
-        error
-      );
-      return this.groundLanguageFallback(language, environmentContext);
-    }
-  }
-
-  private groundLanguageFallback(
-    language: string,
-    _environmentContext: Record<string, unknown>
-  ): EmbodiedGrounding {
-    // Template-based fallback when Python is unavailable
-    const words = language.toLowerCase().split(/\s+/);
-
-    const modalityKeywords: Record<string, string> = {
-      see: "vision",
-      look: "vision",
-      observe: "vision",
-      hear: "audio",
-      listen: "audio",
-      touch: "touch",
-      feel: "touch",
-      grasp: "touch",
-      move: "proprioception",
-      walk: "proprioception",
-      sense: "interoception",
-    };
-
-    const mappings: Array<{
-      concept: string;
-      modality: string;
-      affordance: string;
-    }> = [];
-
-    for (const word of words) {
-      if (modalityKeywords[word]) {
-        mappings.push({
-          concept: word,
-          modality: modalityKeywords[word],
-          affordance: `${word}_action`,
-        });
-      }
-    }
-
-    const metaphors =
-      mappings.length > 0
-        ? mappings.map(
-            m =>
-              `The concept "${m.concept}" grounds through ${m.modality} modality`
-          )
-        : [
-            `Language "${language.substring(0, 50)}" maps to abstract spatial reasoning`,
-            "Embodied grounding via proprioceptive self-model",
-          ];
-
-    return {
-      originalLanguage: language,
-      groundedMetaphors: metaphors,
-      sensoriMotorMappings:
-        mappings.length > 0
-          ? mappings
-          : [
-              {
-                concept: "abstract",
-                modality: "proprioception",
-                affordance: "spatial_reasoning",
-              },
-            ],
-      bodySchemaRelevance: 1.0,
-      predictionError: 0.0,
-    };
+    const { stdout } = await execFileAsync(this.pythonPath, ["-c", script], {
+      timeout: 15000,
+    });
+    return JSON.parse(stdout.trim()) as EmbodiedGrounding;
   }
 }
 

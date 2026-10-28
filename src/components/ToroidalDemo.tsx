@@ -30,6 +30,7 @@ export const ToroidalDemo: React.FC = () => {
   const [prompt, setPrompt] = useState("");
   const [response, setResponse] = useState<ToroidalDialogue | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const handleModeChange = (mode: typeof state.toroidalMode) => {
     setToroidalMode(mode);
@@ -39,6 +40,7 @@ export const ToroidalDemo: React.FC = () => {
     if (!prompt.trim()) return;
 
     setIsLoading(true);
+    setError(null);
     try {
       const result = await generateToroidalResponse(prompt, {
         responseMode: state.toroidalMode === "synced" ? "synced" : "dual",
@@ -47,6 +49,10 @@ export const ToroidalDemo: React.FC = () => {
       setResponse(result);
     } catch (error) {
       console.error("Error generating toroidal response:", error);
+      setResponse(null);
+      setError(
+        `Model request failed: ${error instanceof Error ? error.message : "Unknown error"}`
+      );
     } finally {
       setIsLoading(false);
     }
@@ -165,6 +171,12 @@ export const ToroidalDemo: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {error && (
+        <div className="bg-red-500/10 p-3 rounded border border-red-500/30 text-sm">
+          System: {error}
+        </div>
+      )}
 
       {/* Response Display */}
       {response && (

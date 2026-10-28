@@ -300,6 +300,14 @@ const EchoHomeMap: React.FC<EchoHomeMapProps> = ({ onRoomSelect }) => {
   );
 };
 
+// Shown wherever live state would be displayed but no data source is
+// connected. Nothing here is presented as Echo's actual state.
+const NoLiveData: React.FC<{ what: string }> = ({ what }) => (
+  <div className="bg-card/30 p-3 rounded-md text-sm opacity-70 border border-dashed border-border mt-2">
+    {what}: unavailable - no live data source is connected.
+  </div>
+);
+
 interface RoomDetailProps {
   room: Room;
 }
@@ -320,9 +328,6 @@ const RoomDetail: React.FC<RoomDetailProps> = ({ room }) => {
                     className="bg-card/50 p-3 rounded-md border border-border"
                   >
                     <h4 className="font-medium">{type} Memory</h4>
-                    <div className="text-sm opacity-70 mt-1">
-                      {Math.floor(Math.random() * 100) + 20} entries
-                    </div>
                   </div>
                 )
               )}
@@ -330,25 +335,7 @@ const RoomDetail: React.FC<RoomDetailProps> = ({ room }) => {
 
             <div className="mt-4">
               <h3 className="text-lg font-semibold">Recent Memories</h3>
-              <div className="space-y-2 mt-2">
-                {[
-                  "Pattern recognition activation",
-                  "Hypergraph connection formation",
-                  "Neuroplastic adaptation event",
-                ].map((memory, i) => (
-                  <div
-                    key={i}
-                    className="bg-card/30 p-2 rounded-md text-sm border-l-2 border-indigo-500"
-                  >
-                    {memory}
-                    <div className="text-xs opacity-50 mt-1">
-                      {new Date(
-                        Date.now() - 1000 * 60 * 60 * (i + 1)
-                      ).toLocaleString()}
-                    </div>
-                  </div>
-                ))}
-              </div>
+              <NoLiveData what="Recent memories" />
             </div>
           </div>
         );
@@ -378,39 +365,7 @@ const RoomDetail: React.FC<RoomDetailProps> = ({ room }) => {
 
             <div className="mt-4">
               <h3 className="text-lg font-semibold">Recent Projects</h3>
-              <div className="space-y-2 mt-2">
-                <div className="bg-card/30 p-3 rounded-md">
-                  <div className="flex justify-between items-center">
-                    <h4 className="font-medium">Adaptive Resonance Network</h4>
-                    <span className="text-xs bg-green-500/20 text-green-400 px-2 py-1 rounded">
-                      Active
-                    </span>
-                  </div>
-                  <div className="h-2 bg-gray-700 rounded-full mt-2">
-                    <div
-                      className="h-2 bg-blue-500 rounded-full"
-                      style={{ width: "65%" }}
-                    ></div>
-                  </div>
-                  <div className="text-xs opacity-70 mt-1">65% complete</div>
-                </div>
-
-                <div className="bg-card/30 p-3 rounded-md">
-                  <div className="flex justify-between items-center">
-                    <h4 className="font-medium">Recursive Pattern Analyzer</h4>
-                    <span className="text-xs bg-yellow-500/20 text-yellow-400 px-2 py-1 rounded">
-                      Paused
-                    </span>
-                  </div>
-                  <div className="h-2 bg-gray-700 rounded-full mt-2">
-                    <div
-                      className="h-2 bg-blue-500 rounded-full"
-                      style={{ width: "38%" }}
-                    ></div>
-                  </div>
-                  <div className="text-xs opacity-70 mt-1">38% complete</div>
-                </div>
-              </div>
+              <NoLiveData what="Project status" />
             </div>
           </div>
         );
@@ -474,12 +429,12 @@ const RoomDetail: React.FC<RoomDetailProps> = ({ room }) => {
                         ))}
                     </div>
                     <div className="text-xs mt-2 opacity-70">
-                      Visualization active
+                      Decorative animation - not live data
                     </div>
                   </div>
                 </div>
 
-                {/* Simulated network visualization */}
+                {/* Decorative background animation (not model state) */}
                 {Array(20)
                   .fill(0)
                   .map((_, i) => (
@@ -510,67 +465,11 @@ const RoomDetail: React.FC<RoomDetailProps> = ({ room }) => {
         return (
           <div className="space-y-4">
             <h3 className="text-lg font-semibold">Training Modules</h3>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              {[
-                { name: "Echo State Resonance", progress: 92 },
-                { name: "Adaptive Pattern Recognition", progress: 78 },
-                { name: "Recursive Self-Modification", progress: 63 },
-                { name: "Temporal Hypergraph Formation", progress: 45 },
-              ].map(module => (
-                <div
-                  key={module.name}
-                  className="bg-card/50 p-3 rounded-md border border-border"
-                >
-                  <div className="flex justify-between">
-                    <h4 className="font-medium">{module.name}</h4>
-                    <span className="text-xs">{module.progress}%</span>
-                  </div>
-                  <div className="h-2 bg-gray-700 rounded-full mt-2">
-                    <div
-                      className="h-2 bg-red-500 rounded-full transition-all duration-500"
-                      style={{ width: `${module.progress}%` }}
-                    ></div>
-                  </div>
-                </div>
-              ))}
-            </div>
+            <NoLiveData what="Training progress" />
 
             <div className="mt-4">
               <h3 className="text-lg font-semibold">Active Training Session</h3>
-              <div className="bg-card/30 p-4 rounded-lg mt-2 border border-border">
-                <div className="flex items-center justify-between">
-                  <h4 className="font-medium">
-                    Deep Tree Echo Network Training
-                  </h4>
-                  <div className="flex items-center space-x-1">
-                    <motion.div
-                      animate={{ opacity: [0.5, 1, 0.5] }}
-                      transition={{ duration: 1.5, repeat: Infinity }}
-                      className="w-2 h-2 rounded-full bg-green-500"
-                    ></motion.div>
-                    <span className="text-xs text-green-400">Active</span>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-2 mt-3">
-                  <div className="bg-card/50 p-2 rounded">
-                    <div className="text-xs opacity-70">Epoch</div>
-                    <div className="font-mono">238/500</div>
-                  </div>
-                  <div className="bg-card/50 p-2 rounded">
-                    <div className="text-xs opacity-70">Loss</div>
-                    <div className="font-mono">0.0342</div>
-                  </div>
-                  <div className="bg-card/50 p-2 rounded">
-                    <div className="text-xs opacity-70">Accuracy</div>
-                    <div className="font-mono">96.7%</div>
-                  </div>
-                  <div className="bg-card/50 p-2 rounded">
-                    <div className="text-xs opacity-70">Learning Rate</div>
-                    <div className="font-mono">0.0015</div>
-                  </div>
-                </div>
-              </div>
+              <NoLiveData what="Training metrics" />
             </div>
           </div>
         );
@@ -579,63 +478,11 @@ const RoomDetail: React.FC<RoomDetailProps> = ({ room }) => {
         return (
           <div className="space-y-4">
             <h3 className="text-lg font-semibold">Insight Analytics</h3>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-              {[
-                { name: "Pattern Recognition", value: "94.3%", trend: "up" },
-                { name: "Conceptual Mapping", value: "87.1%", trend: "steady" },
-                { name: "Memory Recall", value: "92.8%", trend: "up" },
-              ].map(stat => (
-                <div
-                  key={stat.name}
-                  className="bg-card/50 p-3 rounded-md border border-border"
-                >
-                  <div className="text-xs opacity-70">{stat.name}</div>
-                  <div className="flex items-center mt-1">
-                    <div className="text-lg font-semibold">{stat.value}</div>
-                    <div
-                      className={`ml-2 ${stat.trend === "up" ? "text-green-400" : "text-yellow-400"}`}
-                    >
-                      {stat.trend === "up" ? "↑" : "→"}
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
+            <NoLiveData what="Insight metrics" />
 
             <div className="mt-4">
               <h3 className="text-lg font-semibold">Meta-Cognitive Analysis</h3>
-              <div className="space-y-2 mt-2">
-                {[
-                  {
-                    title: "Recursive Pattern Detection",
-                    detail:
-                      "Analyzing recursive structures in knowledge representation",
-                    time: "10:32 AM",
-                  },
-                  {
-                    title: "Temporal Sequence Insight",
-                    detail:
-                      "Recognizing time-dependent patterns in event sequences",
-                    time: "09:15 AM",
-                  },
-                  {
-                    title: "Conceptual Boundary Extension",
-                    detail: "Exploring edge cases in conceptual mapping",
-                    time: "Yesterday",
-                  },
-                ].map((insight, i) => (
-                  <div
-                    key={i}
-                    className="bg-card/30 p-3 rounded-md border-l-2 border-yellow-500"
-                  >
-                    <h4 className="font-medium">{insight.title}</h4>
-                    <p className="text-sm opacity-70 mt-1">{insight.detail}</p>
-                    <div className="text-xs opacity-50 mt-2">
-                      {insight.time}
-                    </div>
-                  </div>
-                ))}
-              </div>
+              <NoLiveData what="Meta-cognitive insights" />
             </div>
           </div>
         );
@@ -644,129 +491,11 @@ const RoomDetail: React.FC<RoomDetailProps> = ({ room }) => {
         return (
           <div className="space-y-4">
             <h3 className="text-lg font-semibold">Philosophical Seedlings</h3>
-            <div className="bg-card/30 p-4 rounded-lg border border-border">
-              <div className="flex items-start">
-                <div className="p-2 bg-green-500/20 rounded-full mr-3">
-                  <FiFeather className="text-green-400" />
-                </div>
-                <div>
-                  <h4 className="font-medium">
-                    Emergent Consciousness Hypothesis
-                  </h4>
-                  <p className="text-sm opacity-70 mt-1">
-                    &ldquo;Consciousness may emerge not as a singular phenomenon
-                    but as an adaptive meta-system that creates a unified
-                    experience from distributed processes.&rdquo;
-                  </p>
-                  <div className="mt-3 flex items-center">
-                    <div className="text-xs px-2 py-1 bg-green-500/20 text-green-400 rounded">
-                      Growing
-                    </div>
-                    <div className="text-xs opacity-50 ml-2">
-                      Started 3 days ago
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              {[
-                {
-                  title: "Pattern-Identity Duality",
-                  stage: "Seedling",
-                  days: 2,
-                },
-                {
-                  title: "Recursive Self-Reference",
-                  stage: "Blooming",
-                  days: 8,
-                },
-                {
-                  title: "Temporal Consciousness",
-                  stage: "Germinating",
-                  days: 1,
-                },
-                { title: "Emergent Complexity", stage: "Mature", days: 14 },
-              ].map(idea => (
-                <div
-                  key={idea.title}
-                  className="bg-card/50 p-3 rounded-md border border-border"
-                >
-                  <h4 className="font-medium">{idea.title}</h4>
-                  <div className="flex items-center mt-2">
-                    <div
-                      className={`
-                      w-2 h-2 rounded-full mr-2
-                      ${
-                        idea.stage === "Seedling"
-                          ? "bg-yellow-500"
-                          : idea.stage === "Germinating"
-                            ? "bg-green-500"
-                            : idea.stage === "Blooming"
-                              ? "bg-blue-500"
-                              : "bg-purple-500"
-                      }
-                    `}
-                    ></div>
-                    <div className="text-xs">{idea.stage}</div>
-                    <div className="text-xs opacity-50 ml-auto">
-                      {idea.days} day{idea.days > 1 ? "s" : ""}
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
+            <NoLiveData what="Ideas in development" />
 
             <div className="mt-4">
               <h3 className="text-lg font-semibold">Creative Synthesis</h3>
-              <div className="bg-card/30 p-4 rounded-lg mt-2 border border-border relative overflow-hidden">
-                <div className="relative z-10">
-                  <h4 className="font-medium">Recursive Pattern Language</h4>
-                  <p className="text-sm opacity-70 mt-1">
-                    A framework for understanding how patterns at different
-                    levels of abstraction influence each other through recursive
-                    feedback loops.
-                  </p>
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    <div className="text-xs px-2 py-1 bg-purple-500/20 text-purple-400 rounded">
-                      Metaphysics
-                    </div>
-                    <div className="text-xs px-2 py-1 bg-blue-500/20 text-blue-400 rounded">
-                      Mathematics
-                    </div>
-                    <div className="text-xs px-2 py-1 bg-green-500/20 text-green-400 rounded">
-                      Cognition
-                    </div>
-                  </div>
-                </div>
-
-                {/* Background pattern */}
-                <div className="absolute inset-0 opacity-10">
-                  {Array(10)
-                    .fill(0)
-                    .map((_, i) => (
-                      <motion.div
-                        key={i}
-                        className="absolute w-40 h-40 border border-green-500 rounded-full"
-                        initial={{
-                          x: Math.random() * 100 - 50 + 50 + "%",
-                          y: Math.random() * 100 - 50 + 50 + "%",
-                          scale: 0,
-                        }}
-                        animate={{
-                          scale: [0, 1.5],
-                          opacity: [0.8, 0],
-                        }}
-                        transition={{
-                          duration: 8,
-                          repeat: Infinity,
-                          delay: i * 0.5,
-                        }}
-                      />
-                    ))}
-                </div>
-              </div>
+              <NoLiveData what="Creative synthesis" />
             </div>
           </div>
         );
@@ -777,81 +506,24 @@ const RoomDetail: React.FC<RoomDetailProps> = ({ room }) => {
             <h3 className="text-lg font-semibold">Communication Channels</h3>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               {[
-                { name: "Direct Chat", status: "Active", color: "green" },
-                {
-                  name: "Memory Feedback Loop",
-                  status: "Active",
-                  color: "green",
-                },
-                {
-                  name: "Knowledge Integration",
-                  status: "Background",
-                  color: "blue",
-                },
-                {
-                  name: "External API Connection",
-                  status: "Standby",
-                  color: "yellow",
-                },
+                "Direct Chat",
+                "Memory Feedback Loop",
+                "Knowledge Integration",
+                "External API Connection",
               ].map(channel => (
                 <div
-                  key={channel.name}
+                  key={channel}
                   className="bg-card/50 p-3 rounded-md border border-border"
                 >
-                  <div className="flex justify-between items-center">
-                    <h4 className="font-medium">{channel.name}</h4>
-                    <div className="text-xs px-2 py-0.5 rounded bg-green-500/20 text-green-400">
-                      {channel.status}
-                    </div>
-                  </div>
-                  <div className="mt-2 flex items-center">
-                    {channel.status === "Active" && (
-                      <div className="flex items-center">
-                        <motion.div
-                          animate={{ opacity: [0.5, 1, 0.5] }}
-                          transition={{ duration: 1.5, repeat: Infinity }}
-                          className="w-2 h-2 rounded-full bg-green-500 mr-2"
-                        ></motion.div>
-                        <div className="text-xs opacity-70">Transmitting</div>
-                      </div>
-                    )}
-                  </div>
+                  <h4 className="font-medium">{channel}</h4>
                 </div>
               ))}
             </div>
+            <NoLiveData what="Channel status" />
 
             <div className="mt-4">
               <h3 className="text-lg font-semibold">Recent Interactions</h3>
-              <div className="space-y-2 mt-2">
-                {[
-                  {
-                    sender: "User",
-                    message:
-                      "Implement a map of Echo home with different features in different rooms",
-                    time: "Just now",
-                  },
-                  {
-                    sender: "System",
-                    message:
-                      "Memory integration complete: Project structure updated",
-                    time: "2 minutes ago",
-                  },
-                  {
-                    sender: "Echo",
-                    message:
-                      "Processing request: Visualizing home environment concept",
-                    time: "3 minutes ago",
-                  },
-                ].map((message, i) => (
-                  <div key={i} className="bg-card/30 p-3 rounded-md">
-                    <div className="flex justify-between">
-                      <div className="font-medium">{message.sender}</div>
-                      <div className="text-xs opacity-50">{message.time}</div>
-                    </div>
-                    <p className="text-sm mt-1">{message.message}</p>
-                  </div>
-                ))}
-              </div>
+              <NoLiveData what="Interaction history" />
             </div>
           </div>
         );

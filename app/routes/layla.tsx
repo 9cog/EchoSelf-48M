@@ -6,17 +6,83 @@
  */
 
 import { useState, useEffect, useRef } from "react";
+import { json, type ActionFunctionArgs } from "@remix-run/node";
+import { useFetcher } from "@remix-run/react";
 import { motion, AnimatePresence } from "framer-motion";
 import { FiSend, FiSettings, FiUser, FiMic, FiCamera } from "react-icons/fi";
-import type { LaylaCharacter, ConversationMessage } from "~/services/echolayla";
-import { getAllCharacters } from "~/services/echolayla";
+import type {
+  LaylaCharacter,
+  ConversationMessage,
+} from "~/services/echolayla/types";
+import {
+  getAllCharacters,
+  getCharacter,
+} from "~/services/echolayla/characters";
+import { EchoLaylaService } from "~/services/echolayla/echoLaylaService";
+
+type HistoryEntry = { role: "user" | "assistant"; content: string };
+
+type LaylaActionData =
+  | { ok: true; character: LaylaCharacter; content: string }
+  | { ok: false; error: string };
+
+/**
+ * Generate the selected character's reply with the configured model
+ * (OpenAI / HuggingFace / NanEcho via the EchoLayla service).
+ */
+export async function action({ request }: ActionFunctionArgs) {
+  const formData = await request.formData();
+  const characterId = String(formData.get("character") || "") as LaylaCharacter;
+  const content = String(formData.get("content") || "");
+  let history: HistoryEntry[] = [];
+  try {
+    history = JSON.parse(String(formData.get("history") || "[]"));
+  } catch {
+    return json<LaylaActionData>({ ok: false, error: "Invalid history" });
+  }
+
+  if (!content.trim()) {
+    return json<LaylaActionData>({ ok: false, error: "Message is required" });
+  }
+  if (!getCharacter(characterId)) {
+    return json<LaylaActionData>({
+      ok: false,
+      error: `Unknown character: ${characterId}`,
+    });
+  }
+
+  try {
+    // A fresh service per request keeps conversations isolated between users.
+    const service = new EchoLaylaService();
+    service.setCharacter(characterId);
+    for (const entry of history) {
+      if (entry.role === "user" || entry.role === "assistant") {
+        service.addMessage(entry.role, entry.content);
+      }
+    }
+    const reply = await service.sendMessage(content);
+    return json<LaylaActionData>({
+      ok: true,
+      character: characterId,
+      content: reply.content,
+    });
+  } catch (error) {
+    console.error("[EchoLayla] Model request failed:", error);
+    const reason = error instanceof Error ? error.message : String(error);
+    return json<LaylaActionData>({
+      ok: false,
+      error: `Model request failed: ${reason}`,
+    });
+  }
+}
 
 export default function EchoLayla() {
   const [activeCharacter, setActiveCharacter] = useState<LaylaCharacter>("max");
   const [messages, setMessages] = useState<ConversationMessage[]>([]);
   const [inputValue, setInputValue] = useState("");
-  const [isProcessing, setIsProcessing] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const fetcher = useFetcher<LaylaActionData>();
+  const isProcessing = fetcher.state !== "idle";
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const characters = getAllCharacters();
@@ -27,8 +93,32 @@ export default function EchoLayla() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  // Append the model reply, or an honest system notice on failure
+  useEffect(() => {
+    const data = fetcher.data;
+    if (!data || fetcher.state !== "idle") return;
+
+    const message: ConversationMessage = data.ok
+      ? {
+          id: `${Date.now()}-assistant`,
+          role: "assistant",
+          content: data.content,
+          character: data.character,
+          mode: "text",
+          timestamp: new Date(),
+        }
+      : {
+          id: `${Date.now()}-system`,
+          role: "system",
+          content: data.error,
+          mode: "text",
+          timestamp: new Date(),
+        };
+    setMessages(prev => [...prev, message]);
+  }, [fetcher.data, fetcher.state]);
+
   // Handle sending a message
-  const handleSendMessage = async () => {
+  const handleSendMessage = () => {
     if (!inputValue.trim() || isProcessing) return;
 
     const userMessage: ConversationMessage = {
@@ -40,24 +130,27 @@ export default function EchoLayla() {
       timestamp: new Date(),
     };
 
+    // Conversation so far with the active character (system notices and
+    // other characters' turns are not sent to the model).
+    const history: HistoryEntry[] = messages
+      .filter(
+        m =>
+          (m.role === "user" || m.role === "assistant") &&
+          m.character === activeCharacter
+      )
+      .map(m => ({ role: m.role as HistoryEntry["role"], content: m.content }));
+
     setMessages(prev => [...prev, userMessage]);
     setInputValue("");
-    setIsProcessing(true);
 
-    // Simulate AI response (replace with actual service call)
-    setTimeout(() => {
-      const aiMessage: ConversationMessage = {
-        id: `${Date.now()}-assistant`,
-        role: "assistant",
-        content: `[${currentCharacter?.name}] I understand you said: "${inputValue}". How can I help you with that?`,
+    fetcher.submit(
+      {
         character: activeCharacter,
-        mode: "text",
-        timestamp: new Date(),
-      };
-
-      setMessages(prev => [...prev, aiMessage]);
-      setIsProcessing(false);
-    }, 1000);
+        content: userMessage.content,
+        history: JSON.stringify(history),
+      },
+      { method: "post" }
+    );
   };
 
   // Handle character selection
@@ -186,10 +279,15 @@ export default function EchoLayla() {
                   {currentCharacter?.name.charAt(0)}
                 </div>
                 <h2 className="text-2xl font-bold text-gray-800 dark:text-white mb-2">
-                  Hello! I&apos;m {currentCharacter?.name}
+                  {currentCharacter?.name}
                 </h2>
                 <p className="text-gray-600 dark:text-gray-400 max-w-md mx-auto">
-                  {currentCharacter?.description} How can I help you today?
+                  {currentCharacter?.description}
+                </p>
+                <p className="text-xs text-gray-500 dark:text-gray-500 max-w-md mx-auto mt-2">
+                  Send a message to start. Replies are generated by the
+                  configured model (OPENAI_API_KEY, HUGGINGFACE_API_KEY, or
+                  NANECHO_URL on the server).
                 </p>
               </motion.div>
             )}

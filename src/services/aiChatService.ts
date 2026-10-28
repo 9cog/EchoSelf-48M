@@ -176,8 +176,10 @@ export class AIChatService {
           max_tokens: options.maxTokens || 1000,
         });
 
-        const responseContent =
-          completion.choices[0]?.message?.content || "No response generated.";
+        const responseContent = completion.choices[0]?.message?.content;
+        if (!responseContent) {
+          throw new Error("The model returned an empty response.");
+        }
 
         // Add assistant response to history
         this.addMessage(chatId, {
@@ -219,6 +221,9 @@ export class AIChatService {
         }
       }
 
+      if (!fullResponse) {
+        throw new Error("The model returned an empty response.");
+      }
       return fullResponse;
     } catch (error) {
       console.error("Error in streamResponse:", error);
@@ -237,13 +242,13 @@ export class AIChatService {
       throw new Error("AI Chat not initialized");
     }
 
-    // Add user message to history
-    this.addMessage(chatId, { role: "user", content });
-
     try {
       const mem0ai = deps?.mem0ai;
 
       if (mem0ai && mem0ai.isInitialized()) {
+        // Add user message to history (sendMessage does this on the other path)
+        this.addMessage(chatId, { role: "user", content });
+
         // Get chat history in the format expected by Mem0AI
         const history = this.chatHistory.get(chatId) || [];
         const formattedHistory = history.map(msg => ({
@@ -266,7 +271,7 @@ export class AIChatService {
 
         return response;
       } else {
-        // Fall back to regular response if Mem0AI is not initialized
+        // Regular model response when Mem0AI is not initialized
         return this.sendMessage(chatId, content, options);
       }
     } catch (error) {

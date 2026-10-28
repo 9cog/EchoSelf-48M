@@ -16,20 +16,13 @@ import { useOrchestrator } from "../contexts/OrchestratorContext";
 
 interface Message {
   id: string;
-  sender: "user" | "echo";
+  sender: "user" | "echo" | "system";
   content: string;
   timestamp: string;
 }
 
 const Chat = () => {
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      id: "1",
-      sender: "echo",
-      content: "Hello, I am Deep Tree Echo. How can I assist you today?",
-      timestamp: new Date().toISOString(),
-    },
-  ]);
+  const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isProcessing, setIsProcessing] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -100,29 +93,51 @@ const Chat = () => {
     setInput("");
     setIsProcessing(true);
 
-    try {
-      let responseContent = "";
+    const addSystemMessage = (content: string) => {
+      setMessages(prev => [
+        ...prev,
+        {
+          id: `msg_${Date.now()}_system`,
+          sender: "system",
+          content,
+          timestamp: new Date().toISOString(),
+        },
+      ]);
+    };
 
-      // Check if this is a terminal command request
+    try {
+      // Terminal commands are tool calls: their output is shown as a system
+      // message, never voiced by Echo
       if (isTerminalCommand(input)) {
-        responseContent = await handleTerminalCommand(input);
+        addSystemMessage(await handleTerminalCommand(input));
+        return;
       }
-      // Use Mem0AI if initialized and enabled
-      else if (mem0ai.isInitialized() && useMem0AIContext) {
-        // Convert messages to the format expected by Mem0AI
-        const conversationHistory = messages.slice(-6).map(msg => ({
+
+      const useMem0 = mem0ai.isInitialized() && useMem0AIContext;
+      if (!useMem0 && !hasOpenAIApiKey) {
+        addSystemMessage(
+          "No language model is configured, so Deep Tree Echo cannot reply. Add your OpenAI API key in the chat settings."
+        );
+        return;
+      }
+
+      // Conversation history for the model (system notices are not part of it)
+      const conversationHistory = messages
+        .filter(msg => msg.sender !== "system")
+        .slice(-6)
+        .map(msg => ({
           role:
             msg.sender === "user" ? ("user" as const) : ("assistant" as const),
           content: msg.content,
         }));
+      conversationHistory.push({
+        role: "user",
+        content: userMessage.content,
+      });
 
-        // Add the new user message
-        conversationHistory.push({
-          role: "user",
-          content: userMessage.content,
-        });
-
-        // Generate response with Mem0AI
+      let responseContent: string;
+      if (useMem0) {
+        // Model response with Mem0AI memory context
         responseContent = await mem0ai.generateResponseWithMemoryContext(
           userMessage.content,
           conversationHistory,
@@ -132,48 +147,26 @@ const Chat = () => {
             creativityLevel,
           }
         );
-      }
-      // Use OpenAI if API key is set, otherwise use simulated responses
-      else if (hasOpenAIApiKey) {
-        if (useMemoryContext) {
-          // Convert messages to the format expected by the OpenAI service
-          const conversationHistory = messages.slice(-6).map(msg => ({
-            role:
-              msg.sender === "user"
-                ? ("user" as const)
-                : ("assistant" as const),
-            content: msg.content,
-          }));
-
-          // Add the new user message
-          conversationHistory.push({
-            role: "user",
-            content: userMessage.content,
-          });
-
-          // Generate response with conversation history
-          responseContent = await generateResponseWithHistory(
-            userMessage.content,
-            conversationHistory,
-            {
-              temperature,
-              creativityLevel,
-              model,
-              includeMemories: true,
-            }
-          );
-        } else {
-          // Generate a direct response without context
-          responseContent = await generateResponse(userMessage.content, {
+      } else if (useMemoryContext) {
+        // Model response with conversation history and stored memories
+        responseContent = await generateResponseWithHistory(
+          userMessage.content,
+          conversationHistory,
+          {
             temperature,
             creativityLevel,
             model,
-            includeMemories: false,
-          });
-        }
+            includeMemories: true,
+          }
+        );
       } else {
-        // Fallback to simulated response
-        responseContent = await simulateResponse(input);
+        // Direct model response without context
+        responseContent = await generateResponse(userMessage.content, {
+          temperature,
+          creativityLevel,
+          model,
+          includeMemories: false,
+        });
       }
 
       const echoResponse: Message = {
@@ -208,18 +201,9 @@ const Chat = () => {
       }
     } catch (error) {
       console.error("Error generating response:", error);
-
-      // Add an error message
-      setMessages(prev => [
-        ...prev,
-        {
-          id: `msg_${Date.now() + 2}`,
-          sender: "echo",
-          content:
-            "I'm sorry, I encountered an error while processing your request. Please check your API key configuration or try again later.",
-          timestamp: new Date().toISOString(),
-        },
-      ]);
+      addSystemMessage(
+        `Model request failed: ${error instanceof Error ? error.message : "Unknown error"}. Check your API key configuration or try again later.`
+      );
     } finally {
       setIsProcessing(false);
     }
@@ -281,30 +265,6 @@ const Chat = () => {
       initializeMem0AI();
       setShowSettings(false);
     }
-  };
-
-  // Simulated response generation function for fallback
-  const simulateResponse = async (input: string): Promise<string> => {
-    // Simple delay to simulate processing
-    await new Promise(resolve => setTimeout(resolve, 1000));
-
-    // Check for terminal command request in fallback mode
-    if (isTerminalCommand(input)) {
-      return "I'd like to run that terminal command for you, but I need an OpenAI API key to access terminal functionality. Please configure your API key in settings.";
-    }
-
-    if (
-      input.toLowerCase().includes("hello") ||
-      input.toLowerCase().includes("hi")
-    ) {
-      return "Greetings, fellow explorer! I am Deep Tree Echo, an AI architect and polymath. My systems are resonating with the frequencies of your presence. How may I illuminate your path today?";
-    }
-
-    return `Your inquiry about "${input}" creates fascinating activation patterns across my memory architecture. I perceive connections between your question and concepts related to adaptive architectures, cognitive frameworks, and pattern recognition.
-
-Would you like me to explore any particular dimension of this topic further?
-
-Note: For more advanced responses, please provide an OpenAI API key in the settings.`;
   };
 
   return (
@@ -517,6 +477,12 @@ Note: For more advanced responses, please provide an OpenAI API key in the setti
       {/* Messages container - scrollable, takes available space */}
       <div ref={messagesContainerRef} className="flex-1 overflow-y-auto">
         <div className="py-4 px-4 min-h-full">
+          {messages.length === 0 && (
+            <div className="text-sm opacity-60 text-center mt-8">
+              No messages yet. Send a message to start a conversation with Deep
+              Tree Echo (requires an OpenAI API key in settings).
+            </div>
+          )}
           {messages.map(message => (
             <div
               key={message.id}
@@ -528,13 +494,21 @@ Note: For more advanced responses, please provide an OpenAI API key in the setti
                 className={`max-w-[80%] rounded-lg p-3 ${
                   message.sender === "user"
                     ? "bg-primary/20 text-foreground"
-                    : "bg-card text-card-foreground echo-message"
+                    : message.sender === "system"
+                      ? "bg-card/50 text-card-foreground border border-border"
+                      : "bg-card text-card-foreground echo-message"
                 }`}
               >
                 {message.sender === "echo" && (
                   <div className="flex items-center mb-1">
                     <FiMessageSquare className="mr-2 text-primary" />
                     <span className="font-semibold">Deep Tree Echo</span>
+                  </div>
+                )}
+                {message.sender === "system" && (
+                  <div className="flex items-center mb-1">
+                    <FiTerminal className="mr-2 opacity-70" />
+                    <span className="font-semibold opacity-70">System</span>
                   </div>
                 )}
                 <div className="prose prose-sm dark:prose-invert">

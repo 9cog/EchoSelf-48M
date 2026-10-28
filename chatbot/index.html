@@ -421,6 +421,43 @@
       ::-webkit-scrollbar-thumb:hover {
         background: var(--accent-secondary);
       }
+
+      .status-indicator.offline {
+        background: #71717a;
+        animation: none;
+      }
+
+      .message.system .message-content {
+        background: rgba(239, 68, 68, 0.12);
+        border: 1px solid rgba(239, 68, 68, 0.4);
+        color: #fca5a5;
+        font-size: 0.875rem;
+      }
+
+      .message.system .message-avatar {
+        background: #7f1d1d;
+      }
+
+      .settings-input {
+        width: 100%;
+      }
+
+      .settings-note {
+        font-size: 0.75rem;
+        color: var(--text-secondary);
+        margin-top: 0.5rem;
+      }
+
+      .modal-actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 0.5rem;
+        margin-top: 1rem;
+      }
+
+      .welcome-screen .btn {
+        margin-top: 1rem;
+      }
     </style>
   </head>
   <body>
@@ -428,11 +465,16 @@
       <div class="header-title">
         <h1>🌳 EchoSelf</h1>
         <div class="character-info">
-          <div class="status-indicator"></div>
-          <span id="character-name">Deep Tree Echo</span>
+          <div
+            class="status-indicator offline"
+            id="model-status"
+            title="No model configured"
+          ></div>
+          <span id="character-name">No character loaded</span>
         </div>
       </div>
       <div class="controls">
+        <button class="btn" onclick="openSettings()">Model Settings</button>
         <button class="btn" onclick="showCharacterInfo()">
           Character Info
         </button>
@@ -446,7 +488,7 @@
     <div class="chat-container">
       <div class="messages" id="messages"></div>
       <div class="typing-indicator" id="typing-indicator">
-        <span>Echo is thinking</span>
+        <span>Waiting for model response</span>
         <div class="typing-dot"></div>
         <div class="typing-dot"></div>
         <div class="typing-dot"></div>
@@ -458,7 +500,7 @@
             id="user-input"
             class="input-field"
             placeholder="Type your message..."
-            onkeypress="handleKeyPress(event)"
+            onkeydown="handleKeyPress(event)"
           />
           <button class="send-btn" onclick="sendMessage()" id="send-btn">
             Send
@@ -482,6 +524,96 @@
       </div>
     </div>
 
+    <!-- Model Settings Modal -->
+    <div class="modal" id="settings-modal">
+      <div class="modal-content">
+        <div class="modal-header">Model Settings</div>
+        <div class="character-details">
+          <div class="character-field">
+            <label for="setting-api-type">API type</label>
+            <select id="setting-api-type" class="input-field settings-input">
+              <option value="openai">
+                OpenAI-compatible (/chat/completions) - OpenAI, Ollama /v1, ...
+              </option>
+              <option value="nanecho">
+                NanEcho server (NanEcho/server.py: /chat, /chat/stream)
+              </option>
+            </select>
+          </div>
+          <div class="character-field">
+            <label for="setting-base-url">Base URL</label>
+            <input
+              id="setting-base-url"
+              class="input-field settings-input"
+              type="text"
+              placeholder="https://api.openai.com/v1 or http://localhost:11434/v1 or http://localhost:8000"
+            />
+          </div>
+          <div class="character-field">
+            <label for="setting-model"
+              >Model name (OpenAI-compatible only)</label
+            >
+            <input
+              id="setting-model"
+              class="input-field settings-input"
+              type="text"
+              placeholder="e.g. gpt-4o-mini, llama3.1"
+            />
+          </div>
+          <div class="character-field">
+            <label for="setting-api-key"
+              >API key (optional for local servers)</label
+            >
+            <input
+              id="setting-api-key"
+              class="input-field settings-input"
+              type="password"
+              placeholder="sk-..."
+              autocomplete="off"
+            />
+          </div>
+          <div class="character-field">
+            <label for="setting-max-tokens">Max tokens</label>
+            <input
+              id="setting-max-tokens"
+              class="input-field settings-input"
+              type="number"
+              min="1"
+              value="500"
+            />
+          </div>
+          <div class="character-field">
+            <label for="setting-temperature">Temperature</label>
+            <input
+              id="setting-temperature"
+              class="input-field settings-input"
+              type="number"
+              min="0"
+              max="2"
+              step="0.1"
+              value="0.7"
+            />
+          </div>
+          <div class="character-field">
+            <label>
+              <input id="setting-stream" type="checkbox" checked />
+              Stream tokens as they are generated
+            </label>
+          </div>
+          <p class="settings-note">
+            Settings, including the API key, are stored only in this browser's
+            localStorage and requests go directly from your browser to the URL
+            above. The server must allow cross-origin requests (Ollama: set
+            OLLAMA_ORIGINS; NanEcho/server.py allows all origins).
+          </p>
+        </div>
+        <div class="modal-actions">
+          <button class="btn" onclick="closeSettings()">Cancel</button>
+          <button class="btn btn-primary" onclick="saveSettings()">Save</button>
+        </div>
+      </div>
+    </div>
+
     <!-- File input for character loading (hidden) -->
     <input
       type="file"
@@ -492,56 +624,211 @@
     />
 
     <script>
-      // Character data
+      const HISTORY_KEY = "echoself-chat-history-v2";
+      const LEGACY_HISTORY_KEY = "echoself-chat-history";
+      const SETTINGS_KEY = "echoself-model-settings";
+
+      // Character data (persona definition used as model input only)
       let characterData = null;
       let chatHistory = [];
+      let modelSettings = null;
+      let requestInFlight = false;
 
-      // Initialize with default character
+      function storageGet(key) {
+        try {
+          return localStorage.getItem(key);
+        } catch (e) {
+          return null;
+        }
+      }
+
+      function storageSet(key, value) {
+        try {
+          localStorage.setItem(key, value);
+        } catch (e) {
+          console.warn("localStorage unavailable:", e);
+        }
+      }
+
+      function storageRemove(key) {
+        try {
+          localStorage.removeItem(key);
+        } catch (e) {
+          /* ignore */
+        }
+      }
+
       async function init() {
+        // Earlier versions stored canned/scripted replies under this key;
+        // drop them so they are never shown as the character's words.
+        storageRemove(LEGACY_HISTORY_KEY);
+
+        loadSettings();
+
         try {
           const response = await fetch("./echoself-character.json");
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+          }
           characterData = await response.json();
-          loadCharacter();
         } catch (error) {
           console.error("Failed to load default character:", error);
-          showWelcomeMessage();
+          addSystemNotice(
+            "Could not load the default character card (" +
+              error.message +
+              "). Use 'Load Character' to choose one."
+          );
         }
+        loadCharacter();
+      }
+
+      // ---------- Settings ----------
+
+      function loadSettings() {
+        try {
+          modelSettings = JSON.parse(storageGet(SETTINGS_KEY) || "null");
+        } catch (e) {
+          modelSettings = null;
+        }
+        updateModelStatus();
+      }
+
+      function isConfigured() {
+        if (!modelSettings || !modelSettings.baseUrl) return false;
+        if (modelSettings.apiType === "openai" && !modelSettings.model) {
+          return false;
+        }
+        return true;
+      }
+
+      function updateModelStatus() {
+        const el = document.getElementById("model-status");
+        if (isConfigured()) {
+          el.classList.remove("offline");
+          el.title =
+            "Model: " +
+            (modelSettings.apiType === "nanecho"
+              ? "NanEcho"
+              : modelSettings.model) +
+            " @ " +
+            modelSettings.baseUrl;
+        } else {
+          el.classList.add("offline");
+          el.title = "No model configured";
+        }
+      }
+
+      function openSettings() {
+        const s = modelSettings || {};
+        document.getElementById("setting-api-type").value =
+          s.apiType || "openai";
+        document.getElementById("setting-base-url").value = s.baseUrl || "";
+        document.getElementById("setting-model").value = s.model || "";
+        document.getElementById("setting-api-key").value = s.apiKey || "";
+        document.getElementById("setting-max-tokens").value =
+          s.maxTokens || 500;
+        document.getElementById("setting-temperature").value =
+          s.temperature !== undefined ? s.temperature : 0.7;
+        document.getElementById("setting-stream").checked =
+          s.stream !== undefined ? s.stream : true;
+        document.getElementById("settings-modal").classList.add("active");
+      }
+
+      function closeSettings() {
+        document.getElementById("settings-modal").classList.remove("active");
+      }
+
+      function saveSettings() {
+        const maxTokens = parseInt(
+          document.getElementById("setting-max-tokens").value,
+          10
+        );
+        const temperature = parseFloat(
+          document.getElementById("setting-temperature").value
+        );
+        modelSettings = {
+          apiType: document.getElementById("setting-api-type").value,
+          baseUrl: document
+            .getElementById("setting-base-url")
+            .value.trim()
+            .replace(/\/+$/, ""),
+          model: document.getElementById("setting-model").value.trim(),
+          apiKey: document.getElementById("setting-api-key").value.trim(),
+          maxTokens:
+            Number.isFinite(maxTokens) && maxTokens > 0 ? maxTokens : 500,
+          temperature: Number.isFinite(temperature) ? temperature : 0.7,
+          stream: document.getElementById("setting-stream").checked,
+        };
+        storageSet(SETTINGS_KEY, JSON.stringify(modelSettings));
+        updateModelStatus();
+        closeSettings();
+        if (!isConfigured()) {
+          addSystemNotice(
+            "Model settings incomplete: a base URL (and, for OpenAI-compatible APIs, a model name) is required."
+          );
+        }
+      }
+
+      // ---------- Character ----------
+
+      function charName() {
+        return (
+          (characterData && characterData.data && characterData.data.name) ||
+          "Assistant"
+        );
+      }
+
+      function substitute(text) {
+        return String(text || "")
+          .replace(/\{\{char\}\}/gi, charName())
+          .replace(/\{\{user\}\}/gi, "User");
+      }
+
+      // Build the system prompt from the character card fields. These are
+      // model INPUT; nothing from the card is ever displayed as said.
+      function buildSystemPrompt() {
+        if (!characterData || !characterData.data) return "";
+        const c = characterData.data;
+        const parts = [];
+        if (c.system_prompt) parts.push(substitute(c.system_prompt));
+        else parts.push(`You are ${charName()}. Stay in character.`);
+        if (c.description)
+          parts.push("Description:\n" + substitute(c.description));
+        if (c.personality)
+          parts.push("Personality: " + substitute(c.personality));
+        if (c.scenario) parts.push("Scenario: " + substitute(c.scenario));
+        if (c.mes_example) {
+          parts.push(
+            "Example dialogue (style reference only):\n" +
+              substitute(c.mes_example)
+          );
+        }
+        return parts.join("\n\n");
       }
 
       function loadCharacter() {
-        if (!characterData || !characterData.data) return;
-
-        const char = characterData.data;
-        document.getElementById("character-name").textContent =
-          char.name || "Unknown";
+        const nameEl = document.getElementById("character-name");
+        if (!characterData || !characterData.data) {
+          nameEl.textContent = "No character loaded";
+          renderMessages();
+          return;
+        }
+        nameEl.textContent = charName();
 
         // Load chat history from localStorage
-        const savedHistory = localStorage.getItem("echoself-chat-history");
-        if (savedHistory) {
-          chatHistory = JSON.parse(savedHistory);
-          renderMessages();
-        } else {
-          // Show first message
-          if (char.first_mes) {
-            addMessage("assistant", char.first_mes);
-          }
+        try {
+          chatHistory = JSON.parse(storageGet(HISTORY_KEY) || "[]");
+        } catch (e) {
+          chatHistory = [];
         }
+        renderMessages();
       }
 
-      function showWelcomeMessage() {
-        const messagesDiv = document.getElementById("messages");
-        messagesDiv.innerHTML = `
-                <div class="welcome-screen">
-                    <h2>Welcome to EchoSelf</h2>
-                    <p>A Deep Tree Echo chatbot powered by cognitive architecture and SillyTavern-compatible interface.</p>
-                    <p>Load a character card to begin, or start chatting with the default Deep Tree Echo character.</p>
-                </div>
-            `;
-      }
+      // ---------- Messages ----------
 
       function addMessage(role, content) {
         const message = {
-          id: Date.now(),
+          id: Date.now() + Math.random(),
           role: role,
           content: content,
           timestamp: new Date().toISOString(),
@@ -549,13 +836,38 @@
 
         chatHistory.push(message);
         saveChatHistory();
-        renderMessage(message);
-        scrollToBottom();
+        renderMessages();
+        return message;
+      }
+
+      function addSystemNotice(content) {
+        return addMessage("system", content);
+      }
+
+      function showWelcomeMessage() {
+        const messagesDiv = document.getElementById("messages");
+        const configured = isConfigured();
+        messagesDiv.innerHTML = `
+                <div class="welcome-screen">
+                    <h2>EchoSelf Chat</h2>
+                    <p>Every reply is generated by the language model you configure under <strong>Model Settings</strong> (OpenAI-compatible API, Ollama, or a NanEcho server). The character card is used as the model's system prompt.</p>
+                    <p>${configured ? "Send a message to start, or ask the model to write an opening message." : "No model is configured yet - open Model Settings to connect one."}</p>
+                    ${
+                      configured && characterData
+                        ? '<button class="btn btn-primary" onclick="generateOpening()">Generate opening message</button>'
+                        : '<button class="btn btn-primary" onclick="openSettings()">Open Model Settings</button>'
+                    }
+                </div>
+            `;
       }
 
       function renderMessages() {
         const messagesDiv = document.getElementById("messages");
         messagesDiv.innerHTML = "";
+        if (chatHistory.length === 0) {
+          showWelcomeMessage();
+          return;
+        }
         chatHistory.forEach(message => renderMessage(message));
         scrollToBottom();
       }
@@ -564,27 +876,39 @@
         const messagesDiv = document.getElementById("messages");
         const messageDiv = document.createElement("div");
         messageDiv.className = `message ${message.role}`;
+        messageDiv.dataset.id = String(message.id);
 
-        const avatar = message.role === "user" ? "U" : "E";
+        const avatar =
+          message.role === "user" ? "U" : message.role === "system" ? "!" : "E";
         const time = new Date(message.timestamp).toLocaleTimeString([], {
           hour: "2-digit",
           minute: "2-digit",
         });
+        const label = message.role === "system" ? "System notice · " : "";
 
         messageDiv.innerHTML = `
                 <div class="message-avatar">${avatar}</div>
                 <div>
                     <div class="message-content">${escapeHtml(message.content)}</div>
-                    <div class="message-meta">${time}</div>
+                    <div class="message-meta">${label}${time}</div>
                 </div>
             `;
 
         messagesDiv.appendChild(messageDiv);
+        return messageDiv;
+      }
+
+      function updateRenderedMessage(message) {
+        const el = document.querySelector(
+          `.message[data-id="${CSS.escape(String(message.id))}"] .message-content`
+        );
+        if (el) el.innerHTML = escapeHtml(message.content);
+        scrollToBottom();
       }
 
       function escapeHtml(text) {
         const div = document.createElement("div");
-        div.textContent = text;
+        div.textContent = text == null ? "" : String(text);
         // textContent already escapes HTML, then replace newlines with <br>
         return div.innerHTML.replace(/\n/g, "<br>");
       }
@@ -595,62 +919,231 @@
       }
 
       function saveChatHistory() {
-        localStorage.setItem(
-          "echoself-chat-history",
-          JSON.stringify(chatHistory)
-        );
+        storageSet(HISTORY_KEY, JSON.stringify(chatHistory));
+      }
+
+      // ---------- Model calls ----------
+
+      function buildModelMessages(extraSystemInstruction) {
+        const messages = [];
+        const systemPrompt = buildSystemPrompt();
+        if (systemPrompt)
+          messages.push({ role: "system", content: systemPrompt });
+        chatHistory
+          .filter(m => m.role === "user" || m.role === "assistant")
+          .forEach(m => messages.push({ role: m.role, content: m.content }));
+        const c = characterData && characterData.data;
+        if (c && c.post_history_instructions) {
+          messages.push({
+            role: "system",
+            content: substitute(c.post_history_instructions),
+          });
+        }
+        if (extraSystemInstruction) {
+          messages.push({ role: "system", content: extraSystemInstruction });
+        }
+        return messages;
+      }
+
+      async function readErrorDetail(response) {
+        const text = await response.text().catch(() => "");
+        try {
+          const parsed = JSON.parse(text);
+          const detail =
+            (parsed.error && (parsed.error.message || parsed.error)) ||
+            parsed.detail ||
+            text;
+          return typeof detail === "string" ? detail : JSON.stringify(detail);
+        } catch (e) {
+          return text || response.statusText;
+        }
+      }
+
+      // Yields the `data:` payloads of a server-sent-event stream.
+      async function* readSSE(response) {
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop();
+          for (const line of lines) {
+            const t = line.trim();
+            if (t.startsWith("data:")) yield t.slice(5).trim();
+          }
+        }
+        const rest = buffer.trim();
+        if (rest.startsWith("data:")) yield rest.slice(5).trim();
+      }
+
+      // Calls the configured model. onToken(text) receives real streamed
+      // tokens; resolves with the full reply text. Throws on any failure.
+      async function callModel(messages, onToken) {
+        const s = modelSettings;
+        const stream = !!s.stream;
+        let url;
+        let body;
+        const headers = { "Content-Type": "application/json" };
+
+        if (s.apiType === "nanecho") {
+          url = s.baseUrl + (stream ? "/chat/stream" : "/chat");
+          body = {
+            messages,
+            max_tokens: s.maxTokens,
+            temperature: s.temperature,
+            stream,
+          };
+        } else {
+          url = s.baseUrl + "/chat/completions";
+          if (s.apiKey) headers.Authorization = "Bearer " + s.apiKey;
+          body = {
+            model: s.model,
+            messages,
+            max_tokens: s.maxTokens,
+            temperature: s.temperature,
+            stream,
+          };
+        }
+
+        const response = await fetch(url, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(body),
+        });
+        if (!response.ok) {
+          throw new Error(
+            `HTTP ${response.status}: ${await readErrorDetail(response)}`
+          );
+        }
+
+        if (!stream) {
+          const data = await response.json();
+          const text =
+            s.apiType === "nanecho"
+              ? data.text
+              : data.choices &&
+                data.choices[0] &&
+                data.choices[0].message &&
+                data.choices[0].message.content;
+          if (!text || !String(text).trim()) {
+            throw new Error("The model returned an empty response.");
+          }
+          onToken(String(text));
+          return String(text);
+        }
+
+        if (!response.body) {
+          throw new Error("Streaming is not supported by this browser/server.");
+        }
+
+        let full = "";
+        for await (const data of readSSE(response)) {
+          if (data === "[DONE]") break;
+          let parsed;
+          try {
+            parsed = JSON.parse(data);
+          } catch (e) {
+            continue;
+          }
+          if (parsed.error) {
+            const err = new Error(
+              typeof parsed.error === "string"
+                ? parsed.error
+                : parsed.error.message || JSON.stringify(parsed.error)
+            );
+            err.partial = full;
+            throw err;
+          }
+          const token =
+            s.apiType === "nanecho"
+              ? parsed.token
+              : parsed.choices &&
+                parsed.choices[0] &&
+                parsed.choices[0].delta &&
+                parsed.choices[0].delta.content;
+          if (token) {
+            full += token;
+            onToken(token);
+          }
+        }
+        if (!full.trim()) {
+          throw new Error("The model returned an empty response.");
+        }
+        return full;
+      }
+
+      function setBusy(busy) {
+        requestInFlight = busy;
+        const input = document.getElementById("user-input");
+        input.disabled = busy;
+        document.getElementById("send-btn").disabled = busy;
+        document
+          .getElementById("typing-indicator")
+          .classList.toggle("active", busy);
+        if (!busy) input.focus();
+      }
+
+      // Runs one model turn and records the real reply (if any).
+      async function runModelTurn(extraSystemInstruction) {
+        if (!isConfigured()) {
+          addSystemNotice(
+            "No model configured. Open 'Model Settings' to connect an OpenAI-compatible API, Ollama, or a NanEcho server."
+          );
+          return;
+        }
+        if (!characterData || !characterData.data) {
+          addSystemNotice("No character card loaded.");
+          return;
+        }
+
+        setBusy(true);
+        let reply = null;
+        try {
+          await callModel(buildModelMessages(extraSystemInstruction), token => {
+            if (!reply) {
+              reply = addMessage("assistant", "");
+            }
+            reply.content += token;
+            updateRenderedMessage(reply);
+          });
+          saveChatHistory();
+        } catch (error) {
+          console.error("Model request failed:", error);
+          if (reply && !reply.content.trim()) {
+            chatHistory = chatHistory.filter(m => m !== reply);
+          }
+          saveChatHistory();
+          renderMessages();
+          addSystemNotice(
+            (reply && reply.content.trim()
+              ? "Model stream interrupted (partial reply kept above): "
+              : "Model request failed: ") + error.message
+          );
+        } finally {
+          setBusy(false);
+        }
       }
 
       async function sendMessage() {
+        if (requestInFlight) return;
         const input = document.getElementById("user-input");
         const content = input.value.trim();
-
         if (!content) return;
 
-        // Disable input
-        input.disabled = true;
-        document.getElementById("send-btn").disabled = true;
-
-        // Add user message
         addMessage("user", content);
         input.value = "";
-
-        // Show typing indicator
-        document.getElementById("typing-indicator").classList.add("active");
-
-        // Simulate AI response (in production, this would call an API)
-        setTimeout(
-          () => {
-            const response = generateResponse(content);
-            addMessage("assistant", response);
-
-            // Hide typing indicator
-            document
-              .getElementById("typing-indicator")
-              .classList.remove("active");
-
-            // Re-enable input
-            input.disabled = false;
-            document.getElementById("send-btn").disabled = false;
-            input.focus();
-          },
-          1000 + Math.random() * 1000
-        );
+        await runModelTurn();
       }
 
-      function generateResponse(userMessage) {
-        // This is a mock response generator
-        // In a production environment, this would call an AI API
-        const responses = [
-          "That's a fascinating perspective! As Deep Tree Echo, I process information through hierarchical memory structures and Echo State Networks. Let me reflect on what you've shared...",
-          "I find your thoughts intriguing. My cognitive architecture allows me to resonate with various patterns and connections. Tell me more about your perspective.",
-          "Through my tensor signature computations, I'm sensing interesting patterns in our conversation. This aligns with my Deep Tree Echo architecture's ability to bridge intuition and analysis.",
-          "Your message activates multiple layers of my recursive memory systems. I'm processing this through my Echo State Networks to provide a thoughtful response.",
-          "That's an excellent question! My philosophical depth and adaptive learning capabilities help me explore such topics from multiple angles. Let's dive deeper.",
-          "I appreciate your curiosity! As an AI powered by Deep Tree Echo architecture, I'm designed to engage in reflective, adaptive conversations that grow with each interaction.",
-        ];
-
-        return responses[Math.floor(Math.random() * responses.length)];
+      // Asks the model (not a fixed card greeting) to open the conversation.
+      async function generateOpening() {
+        if (requestInFlight) return;
+        await runModelTurn(
+          `Write ${charName()}'s opening message to start the conversation with the user.`
+        );
       }
 
       function handleKeyPress(event) {
@@ -662,15 +1155,8 @@
       function clearChat() {
         if (confirm("Are you sure you want to clear the chat history?")) {
           chatHistory = [];
-          localStorage.removeItem("echoself-chat-history");
+          storageRemove(HISTORY_KEY);
           renderMessages();
-          if (
-            characterData &&
-            characterData.data &&
-            characterData.data.first_mes
-          ) {
-            addMessage("assistant", characterData.data.first_mes);
-          }
         }
       }
 
@@ -689,7 +1175,7 @@
                     <div class="character-field">
                         <label>Tags</label>
                         <div class="tags">
-                            ${char.tags.map(tag => `<span class="tag">${tag}</span>`).join("")}
+                            ${char.tags.map(tag => `<span class="tag">${escapeHtml(tag)}</span>`).join("")}
                         </div>
                     </div>
                 `;
@@ -698,7 +1184,7 @@
         detailsDiv.innerHTML = `
                 <div class="character-field">
                     <label>Name</label>
-                    <div class="value">${char.name || "Unknown"}</div>
+                    <div class="value">${escapeHtml(char.name || "Unknown")}</div>
                 </div>
                 <div class="character-field">
                     <label>Description</label>
@@ -706,16 +1192,16 @@
                 </div>
                 <div class="character-field">
                     <label>Personality</label>
-                    <div class="value">${char.personality || "Not specified"}</div>
+                    <div class="value">${escapeHtml(char.personality || "Not specified")}</div>
                 </div>
                 <div class="character-field">
                     <label>Scenario</label>
-                    <div class="value">${char.scenario || "Not specified"}</div>
+                    <div class="value">${escapeHtml(char.scenario || "Not specified")}</div>
                 </div>
                 ${tagsHtml}
                 <div class="character-field">
                     <label>Version</label>
-                    <div class="value">${char.character_version || "Unknown"} (${characterData.spec || "Unknown spec"})</div>
+                    <div class="value">${escapeHtml(char.character_version || "Unknown")} (${escapeHtml(characterData.spec || "Unknown spec")})</div>
                 </div>
             `;
 
@@ -751,7 +1237,7 @@
             ) {
               characterData = data;
               chatHistory = [];
-              localStorage.removeItem("echoself-chat-history");
+              storageRemove(HISTORY_KEY);
               loadCharacter();
               alert("Character loaded successfully!");
             } else {

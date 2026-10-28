@@ -11,7 +11,66 @@ import process from "node:process";
 /**
  * AI Provider types
  */
-export type AIProvider = "openai" | "huggingface" | "local";
+export type AIProvider = "openai" | "huggingface" | "nanecho" | "local";
+
+/**
+ * Thrown when no real model provider is configured.
+ */
+export class AIConfigurationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AIConfigurationError";
+  }
+}
+
+/**
+ * Read an error body from a failed response without assuming JSON.
+ */
+async function readErrorDetail(response: Response): Promise<string> {
+  const text = await response.text().catch(() => "");
+  try {
+    const parsed = JSON.parse(text);
+    const detail =
+      parsed?.error?.message ?? parsed?.error ?? parsed?.detail ?? text;
+    return typeof detail === "string" ? detail : JSON.stringify(detail);
+  } catch {
+    return text || response.statusText;
+  }
+}
+
+/**
+ * Iterate over the `data:` payloads of a server-sent-event response body,
+ * buffering partial lines across network chunks.
+ */
+async function* readSSEData(response: Response): AsyncGenerator<string> {
+  const reader = response.body?.getReader();
+  if (!reader) {
+    throw new Error("Failed to get response reader");
+  }
+  const decoder = new TextDecoder();
+  let buffer = "";
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed.startsWith("data:")) {
+          yield trimmed.slice(5).trim();
+        }
+      }
+    }
+    const rest = buffer.trim();
+    if (rest.startsWith("data:")) {
+      yield rest.slice(5).trim();
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
 
 /**
  * AI Response structure
@@ -84,17 +143,18 @@ export class OpenAIAdapter implements AIAdapter {
     });
 
     if (!response.ok) {
-      const error = await response.json();
-      throw new Error(
-        `OpenAI API error: ${error.error?.message || response.statusText}`
-      );
+      throw new Error(`OpenAI API error: ${await readErrorDetail(response)}`);
     }
 
     const data = await response.json();
-    const choice = data.choices[0];
+    const choice = data.choices?.[0];
+    const content: string | undefined = choice?.message?.content;
+    if (!content || !content.trim()) {
+      throw new Error("OpenAI API returned an empty completion");
+    }
 
     return {
-      content: choice.message.content,
+      content,
       finishReason: choice.finish_reason,
       usage: data.usage,
     };
@@ -126,57 +186,36 @@ export class OpenAIAdapter implements AIAdapter {
     });
 
     if (!response.ok) {
-      const error = await response.json();
-      throw new Error(
-        `OpenAI API error: ${error.error?.message || response.statusText}`
-      );
+      throw new Error(`OpenAI API error: ${await readErrorDetail(response)}`);
     }
 
     let fullContent = "";
     let finishReason: "stop" | "length" | "error" = "stop";
 
-    const reader = response.body?.getReader();
-    const decoder = new TextDecoder();
+    for await (const data of readSSEData(response)) {
+      if (data === "[DONE]") continue;
 
-    if (!reader) {
-      throw new Error("Failed to get response reader");
+      let parsed;
+      try {
+        parsed = JSON.parse(data);
+      } catch (e) {
+        console.error("Error parsing SSE data:", e);
+        continue;
+      }
+      const content = parsed.choices?.[0]?.delta?.content || "";
+
+      if (content) {
+        fullContent += content;
+        onChunk(content);
+      }
+
+      if (parsed.choices?.[0]?.finish_reason) {
+        finishReason = parsed.choices[0].finish_reason;
+      }
     }
 
-    try {
-      let done = false;
-      while (!done) {
-        const result = await reader.read();
-        done = result.done;
-        if (done) break;
-
-        const chunk = decoder.decode(result.value);
-        const lines = chunk.split("\n").filter(line => line.trim() !== "");
-
-        for (const line of lines) {
-          if (line.startsWith("data: ")) {
-            const data = line.slice(6);
-            if (data === "[DONE]") continue;
-
-            try {
-              const parsed = JSON.parse(data);
-              const content = parsed.choices[0]?.delta?.content || "";
-
-              if (content) {
-                fullContent += content;
-                onChunk(content);
-              }
-
-              if (parsed.choices[0]?.finish_reason) {
-                finishReason = parsed.choices[0].finish_reason;
-              }
-            } catch (e) {
-              console.error("Error parsing SSE data:", e);
-            }
-          }
-        }
-      }
-    } finally {
-      reader.releaseLock();
+    if (!fullContent.trim()) {
+      throw new Error("OpenAI API returned an empty completion");
     }
 
     return {
@@ -231,14 +270,16 @@ export class HuggingFaceAdapter implements AIAdapter {
     );
 
     if (!response.ok) {
-      const error = await response.json();
       throw new Error(
-        `HuggingFace API error: ${error.error || response.statusText}`
+        `HuggingFace API error: ${await readErrorDetail(response)}`
       );
     }
 
     const data = await response.json();
-    const generated = data[0]?.generated_text || "";
+    const generated: string = data[0]?.generated_text || "";
+    if (!generated.trim()) {
+      throw new Error("HuggingFace API returned an empty completion");
+    }
 
     return {
       content: generated,
@@ -251,8 +292,8 @@ export class HuggingFaceAdapter implements AIAdapter {
     config: InferenceConfig,
     onChunk: StreamCallback
   ): Promise<AIResponse> {
-    // HuggingFace Inference API doesn't support streaming by default
-    // Fall back to non-streaming
+    // This endpoint is used without token streaming: deliver the whole real
+    // model reply as a single chunk.
     const result = await this.generate(messages, config);
     onChunk(result.content);
     return result;
@@ -277,25 +318,78 @@ export class HuggingFaceAdapter implements AIAdapter {
 }
 
 /**
- * Mock Adapter for development/testing
+ * NanEcho Adapter - the locally trained NanEcho model served by
+ * NanEcho/server.py (FastAPI). Configure with NANECHO_URL.
  */
-export class MockAdapter implements AIAdapter {
+export class NanEchoAdapter implements AIAdapter {
+  private baseURL: string;
+
+  constructor(baseURL?: string) {
+    this.baseURL = (baseURL || process.env.NANECHO_URL || "").replace(
+      /\/+$/,
+      ""
+    );
+  }
+
+  private requireURL(): string {
+    if (!this.baseURL) {
+      throw new AIConfigurationError(
+        "NanEcho server URL (NANECHO_URL) not configured"
+      );
+    }
+    return this.baseURL;
+  }
+
+  private body(
+    messages: Array<{ role: string; content: string }>,
+    config: InferenceConfig,
+    stream: boolean
+  ): string {
+    return JSON.stringify({
+      messages,
+      max_tokens: config.maxTokens,
+      temperature: config.temperature,
+      ...(config.topK !== undefined ? { top_k: config.topK } : {}),
+      stream,
+    });
+  }
+
   async generate(
     messages: Array<{ role: string; content: string }>,
     config: InferenceConfig
   ): Promise<AIResponse> {
-    const lastMessage = messages[messages.length - 1];
-    const characterName =
-      config.systemPrompt?.match(/You are (\w+),/)?.[1] || "AI";
+    const response = await fetch(`${this.requireURL()}/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: this.body(messages, config, false),
+    });
+
+    if (!response.ok) {
+      throw new Error(
+        `NanEcho server error: ${await readErrorDetail(response)}`
+      );
+    }
+
+    const data = (await response.json()) as {
+      text?: string;
+      tokens_generated?: number;
+    };
+    const content = data.text ?? "";
+    if (!content.trim()) {
+      throw new Error("NanEcho model returned an empty completion");
+    }
 
     return {
-      content: `[${characterName}] This is a mock response to: "${lastMessage.content}"`,
+      content,
       finishReason: "stop",
-      usage: {
-        promptTokens: 50,
-        completionTokens: 20,
-        totalTokens: 70,
-      },
+      usage:
+        data.tokens_generated !== undefined
+          ? {
+              promptTokens: 0,
+              completionTokens: data.tokens_generated,
+              totalTokens: data.tokens_generated,
+            }
+          : undefined,
     };
   }
 
@@ -304,16 +398,36 @@ export class MockAdapter implements AIAdapter {
     config: InferenceConfig,
     onChunk: StreamCallback
   ): Promise<AIResponse> {
-    const response = await this.generate(messages, config);
+    const response = await fetch(`${this.requireURL()}/chat/stream`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: this.body(messages, config, true),
+    });
 
-    // Simulate streaming by chunking
-    const words = response.content.split(" ");
-    for (const word of words) {
-      await new Promise(resolve => setTimeout(resolve, 50));
-      onChunk(word + " ");
+    if (!response.ok) {
+      throw new Error(
+        `NanEcho server error: ${await readErrorDetail(response)}`
+      );
     }
 
-    return response;
+    let fullContent = "";
+    for await (const data of readSSEData(response)) {
+      if (data === "[DONE]") break;
+      const parsed = JSON.parse(data) as { token?: string; error?: string };
+      if (parsed.error) {
+        throw new Error(`NanEcho generation error: ${parsed.error}`);
+      }
+      if (parsed.token) {
+        fullContent += parsed.token;
+        onChunk(parsed.token);
+      }
+    }
+
+    if (!fullContent.trim()) {
+      throw new Error("NanEcho model returned an empty completion");
+    }
+
+    return { content: fullContent, finishReason: "stop" };
   }
 }
 
@@ -330,20 +444,22 @@ export class AIServiceFactory {
         return new OpenAIAdapter(options?.apiKey, options?.baseURL);
       case "huggingface":
         return new HuggingFaceAdapter(options?.apiKey, options?.model);
+      case "nanecho":
       case "local":
-        // TODO: Implement local inference adapter (LLaMA.cpp, etc.)
-        return new MockAdapter();
+        return new NanEchoAdapter(options?.baseURL);
       default:
-        return new MockAdapter();
+        throw new AIConfigurationError(
+          `Unknown AI provider: ${String(provider)}`
+        );
     }
   }
 }
 
 /**
- * Get default AI adapter based on environment
+ * Get default AI adapter based on environment.
+ * Throws when no real model provider is configured.
  */
 export function getDefaultAdapter(): AIAdapter {
-  // Check for API keys in environment
   if (process.env.OPENAI_API_KEY) {
     return AIServiceFactory.createAdapter("openai");
   }
@@ -352,6 +468,11 @@ export function getDefaultAdapter(): AIAdapter {
     return AIServiceFactory.createAdapter("huggingface");
   }
 
-  // Fall back to mock for development
-  return AIServiceFactory.createAdapter("local");
+  if (process.env.NANECHO_URL) {
+    return AIServiceFactory.createAdapter("nanecho");
+  }
+
+  throw new AIConfigurationError(
+    "No AI model provider is configured. Set OPENAI_API_KEY, HUGGINGFACE_API_KEY, or NANECHO_URL (URL of a running NanEcho/server.py)."
+  );
 }

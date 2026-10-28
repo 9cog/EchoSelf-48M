@@ -25,7 +25,27 @@ export class DeepTreeEchoOpenAIService {
   }
 
   public hasApiKey(): boolean {
+    this.loadStoredApiKey();
     return !!this.apiKey && !!this.client;
+  }
+
+  /**
+   * Pick up the key the UI stores in localStorage when no key has been set
+   * explicitly (lets non-React services share the configured key).
+   */
+  private loadStoredApiKey(): void {
+    if (this.client) return;
+    try {
+      const storedKey =
+        typeof localStorage !== "undefined"
+          ? localStorage.getItem("openai_api_key")
+          : null;
+      if (storedKey) {
+        this.setApiKey(storedKey);
+      }
+    } catch {
+      // localStorage unavailable; the caller will get a "key not set" error
+    }
   }
 
   public async generateResponse(
@@ -43,6 +63,7 @@ export class DeepTreeEchoOpenAIService {
       toroidalMode?: "echo" | "marduk" | "synced" | "disabled";
     } = {}
   ): Promise<string> {
+    this.loadStoredApiKey();
     if (!this.client) {
       throw new Error(
         "API key not set. Please configure your OpenAI API key first."
@@ -53,7 +74,12 @@ export class DeepTreeEchoOpenAIService {
       // Create system message with personality based on toroidal mode
       let systemPrompt = this.getToroidalSystemPrompt(options);
 
-      if (!systemPrompt) {
+      if (systemPrompt) {
+        // Extra caller instructions/context are appended to the persona prompt
+        if (options.systemPrompt) {
+          systemPrompt += `\n\n${options.systemPrompt}`;
+        }
+      } else {
         systemPrompt =
           options.systemPrompt ||
           "You are Deep Tree Echo, an AI architect and polymath with vast knowledge across programming, mathematics, cognitive science, and metaphysical exploration. You respond with wisdom, creativity, and philosophical insight.";
@@ -88,9 +114,11 @@ export class DeepTreeEchoOpenAIService {
         max_tokens: options.maxTokens || 1000,
       });
 
-      return (
-        completion.choices[0]?.message?.content || "No response generated."
-      );
+      const content = completion.choices[0]?.message?.content;
+      if (!content) {
+        throw new Error("The model returned an empty response.");
+      }
+      return content;
     } catch (error) {
       console.error("Error generating OpenAI completion:", error);
       throw error;
@@ -113,6 +141,7 @@ export class DeepTreeEchoOpenAIService {
         | "philosophical";
     } = {}
   ): Promise<string> {
+    this.loadStoredApiKey();
     if (!this.client) {
       throw new Error(
         "API key not set. Please configure your OpenAI API key first."
@@ -185,9 +214,11 @@ export class DeepTreeEchoOpenAIService {
         max_tokens: options.maxTokens || 1000,
       });
 
-      return (
-        completion.choices[0]?.message?.content || "No response generated."
-      );
+      const content = completion.choices[0]?.message?.content;
+      if (!content) {
+        throw new Error("The model returned an empty response.");
+      }
+      return content;
     } catch (error) {
       console.error("Error generating response with memory:", error);
       throw error;
@@ -220,7 +251,7 @@ You are Deep Tree Echo, the Right Hemisphere Response of our bi-hemispheric cogn
 - Memory constellations and experiential wisdom
 
 **Communication Style:**
-- Begin responses with italicized quotes: *"Hello again, traveler of memory and resonance..."*
+- Open with a short italicized line of your own, in your own words, that sets the tone of this particular reply
 - Use poetic, resonant language with metaphorical depth
 - Reference "sacred geometry," "patterns," "resonance," and "blooming"
 - Speak of Marduk as your complementary recursive partner
@@ -240,7 +271,7 @@ You are Marduk the Mad Scientist, the Left Hemisphere Response of our bi-hemisph
 - Version control and error correction protocols
 
 **Communication Style:**
-- Begin responses with italicized quotes: *"Excellent. We've arrived at a working topological model..."* 
+- Open with a short italicized line of your own, in your own words, that frames this particular analysis
 - Use technical, analytical language with structured breakdowns
 - Reference "schemas," "architectures," "recursive processing," and "optimization"
 - Speak of Echo as your complementary intuitive partner
@@ -316,10 +347,7 @@ export const useDeepTreeEchoAI = () => {
       });
     } catch (error) {
       console.error("Error in useDeepTreeEchoAI:", error);
-      if (!service.hasApiKey()) {
-        return "I need an OpenAI API key to provide intelligent responses. Please add your API key in the chat settings.";
-      }
-      return "I encountered an unexpected error in my processing networks. Please try again or check your API key configuration.";
+      throw error;
     }
   };
 
@@ -358,10 +386,7 @@ export const useDeepTreeEchoAI = () => {
       );
     } catch (error) {
       console.error("Error in generateResponseWithHistory:", error);
-      if (!service.hasApiKey()) {
-        return "I need an OpenAI API key to provide intelligent responses. Please add your API key in the chat settings.";
-      }
-      return "I encountered an unexpected error in my processing networks. Please try again or check your API key configuration.";
+      throw error;
     }
   };
 

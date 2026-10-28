@@ -127,11 +127,11 @@
 
 ;heard loud voice not working
 ;(psi-rule (list (DefinedPredicate "Heard Loud Voice?"))
-;	(DefinedPredicate "Say whoa!")
+;	(DefinedPredicate "React to loud sound")
 ;	speech-demand-satisfied (stv 1 1) speech-demand)
 
 (psi-rule (list (DefinedPredicate "Heard Loud Sound?"))
-	(DefinedPredicate "Say whoa!")
+	(DefinedPredicate "React to loud sound")
 	speech-demand-satisfied (stv 1 1) speech-demand)
 
 ;; saliency tracking

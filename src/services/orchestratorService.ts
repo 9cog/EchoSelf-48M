@@ -187,9 +187,11 @@ export class OrchestratorService {
   public async executeInTerminal(command: string): Promise<string> {
     this.dispatchEvent("terminal_command", { command });
 
-    // In a real implementation, this would interact with the actual terminal
-    // For now, return a simulated response
-    return `Simulated output for command: ${command}`;
+    // This service has no terminal executor; use the OrchestratorContext's
+    // executeInTerminal, which runs commands through the Terminal component
+    throw new Error(
+      `Terminal executor unavailable: command not executed (${command})`
+    );
   }
 
   /**
@@ -301,7 +303,9 @@ export const useOrchestratorService = () => {
       } else if (deepTreeEchoAI.hasApiKey) {
         return deepTreeEchoAI.generateResponse(prompt, options);
       } else {
-        return "AI systems not initialized. Please configure API key in settings.";
+        throw new Error(
+          "AI systems not initialized. Please configure an API key in settings."
+        );
       }
     },
 

@@ -45,10 +45,11 @@ const DEFAULT_PRIVACY_SETTINGS: PrivacySettings = {
 export class EchoLaylaService {
   private activeCharacter: LaylaCharacter = "max";
   private currentContext?: ConversationContext;
-  private inferenceConfig: InferenceConfig = DEFAULT_INFERENCE_CONFIG;
-  private privacySettings: PrivacySettings = DEFAULT_PRIVACY_SETTINGS;
+  private inferenceConfig: InferenceConfig = { ...DEFAULT_INFERENCE_CONFIG };
+  private privacySettings: PrivacySettings = { ...DEFAULT_PRIVACY_SETTINGS };
   private tasks: Map<string, AutomationTask> = new Map();
-  private aiAdapter: AIAdapter = getDefaultAdapter();
+  // Resolved lazily so a missing provider surfaces as an error on use.
+  private aiAdapter?: AIAdapter;
 
   /**
    * Initialize the service
@@ -159,8 +160,8 @@ export class EchoLaylaService {
     // Add user message
     this.addMessage("user", userMessage);
 
-    // TODO: Integrate with actual AI inference service
-    // For now, return a placeholder response
+    // Generate the reply with the configured model. Errors propagate to the
+    // caller; no assistant message is recorded on failure.
     const response = await this.generateResponse(userMessage);
 
     return this.addMessage("assistant", response);
@@ -176,35 +177,40 @@ export class EchoLaylaService {
       this.startNewContext();
     }
 
-    try {
-      // Build messages for AI
-      const messages = [
-        {
-          role: "system",
-          content: this.inferenceConfig.systemPrompt || character.systemPrompt,
-        },
-        ...this.currentContext!.messages.map(msg => ({
+    // Build messages for AI (persona prompt is model input)
+    const messages = [
+      {
+        role: "system",
+        content: this.inferenceConfig.systemPrompt || character.systemPrompt,
+      },
+      ...this.currentContext!.messages.filter(msg => msg.role !== "system").map(
+        msg => ({
           role: msg.role === "assistant" ? "assistant" : "user",
           content: msg.content,
-        })),
-      ];
+        })
+      ),
+    ];
 
-      // Generate response
-      const response = await this.aiAdapter.generate(
-        messages,
-        this.inferenceConfig
-      );
-
-      // Update token usage in context metadata
-      if (response.usage && this.currentContext) {
-        this.currentContext.metadata.totalTokens = response.usage.totalTokens;
-      }
-
-      return response.content;
-    } catch (error) {
-      console.error("[EchoLayla] Error generating response:", error);
-      return `[${character.name}] I apologize, but I encountered an error processing your request. Please try again.`;
+    if (!this.aiAdapter) {
+      this.aiAdapter = getDefaultAdapter();
     }
+
+    // Generate response; errors propagate to the caller.
+    const response = await this.aiAdapter.generate(
+      messages,
+      this.inferenceConfig
+    );
+
+    if (!response.content || !response.content.trim()) {
+      throw new Error("The model returned an empty response");
+    }
+
+    // Update token usage in context metadata
+    if (response.usage && this.currentContext) {
+      this.currentContext.metadata.totalTokens = response.usage.totalTokens;
+    }
+
+    return response.content;
   }
 
   /**
@@ -234,8 +240,8 @@ export class EchoLaylaService {
 
     this.tasks.set(task.id, task);
 
-    // Start processing task asynchronously
-    this.processTask(task.id).catch(console.error);
+    // Attempt to process the task
+    this.processTask(task.id);
 
     return task;
   }
@@ -243,26 +249,17 @@ export class EchoLaylaService {
   /**
    * Process an automation task
    */
-  private async processTask(taskId: string): Promise<void> {
+  private processTask(taskId: string): void {
     const task = this.tasks.get(taskId);
     if (!task) return;
 
-    task.status = "processing";
-
-    try {
-      // TODO: Implement actual task processing logic
-      // This would dispatch to different handlers based on task.type
-
-      // Placeholder processing
-      await new Promise(resolve => setTimeout(resolve, 1000));
-
-      task.status = "completed";
-      task.completedAt = new Date();
-      task.output = { result: "Task completed successfully" };
-    } catch (error) {
-      task.status = "failed";
-      task.output = { error: String(error) };
-    }
+    // No task executor is implemented. Report the task honestly as not
+    // executed instead of fabricating a result.
+    task.status = "failed";
+    task.completedAt = new Date();
+    task.output = {
+      error: `Task not executed: no executor is available for task type "${task.type}".`,
+    };
   }
 
   /**

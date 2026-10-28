@@ -1,10 +1,5 @@
 import { json, type ActionFunctionArgs } from "@remix-run/node";
-import {
-  useActionData,
-  useLoaderData,
-  useNavigation,
-  Form,
-} from "@remix-run/react";
+import { useFetcher, useLoaderData } from "@remix-run/react";
 import { useEffect, useState } from "react";
 import ChatInterface, { Message } from "~/components/ChatInterface";
 import { getAIService } from "~/services/ai.server";
@@ -14,14 +9,12 @@ export async function loader() {
 
   return json({
     apiKeyConfigured: aiService.isInitialized(),
-    initialMessage: {
-      id: "welcome",
-      role: "assistant" as const,
-      content: "Welcome to Deep Tree Echo. How can I assist you today?",
-      timestamp: new Date().toISOString(),
-    },
   });
 }
+
+type ChatActionData =
+  | { userMessage: Message; assistantMessage: Message; success: true }
+  | { userMessage?: Message; error: string };
 
 export async function action({ request }: ActionFunctionArgs) {
   const formData = await request.formData();
@@ -31,7 +24,7 @@ export async function action({ request }: ActionFunctionArgs) {
   ) as Message[];
 
   if (!content) {
-    return json({ error: "Message content is required" });
+    return json<ChatActionData>({ error: "Message content is required" });
   }
 
   const aiService = getAIService();
@@ -44,7 +37,11 @@ export async function action({ request }: ActionFunctionArgs) {
     timestamp: new Date().toISOString(),
   };
 
-  const updatedHistory = [...history, userMessage];
+  // System notices (errors) are UI-only and are never sent to the model.
+  const updatedHistory = [
+    ...history.filter(msg => msg.role !== "system"),
+    userMessage,
+  ];
 
   try {
     // Convert messages to the format expected by the AI service
@@ -53,7 +50,7 @@ export async function action({ request }: ActionFunctionArgs) {
       content: msg.content,
     }));
 
-    // Generate response
+    // Generate response from the configured model
     const responseContent =
       await aiService.generateResponseWithHistory(formattedMessages);
 
@@ -65,130 +62,103 @@ export async function action({ request }: ActionFunctionArgs) {
       timestamp: new Date().toISOString(),
     };
 
-    return json({
+    return json<ChatActionData>({
       userMessage,
       assistantMessage,
       success: true,
     });
   } catch (error) {
     console.error("Error generating response:", error);
-    return json({
+    const reason = error instanceof Error ? error.message : String(error);
+    return json<ChatActionData>({
       userMessage,
-      error: "Failed to generate response. Please try again.",
+      error: `Model request failed: ${reason}`,
     });
   }
 }
 
 export default function ChatPage() {
   const loaderData = useLoaderData<typeof loader>();
-  const actionData = useActionData<typeof action>();
-  const navigation = useNavigation();
-  const [messages, setMessages] = useState<Message[]>([
-    loaderData.initialMessage,
-  ]);
+  const fetcher = useFetcher<ChatActionData>();
+  const [messages, setMessages] = useState<Message[]>([]);
   const [showApiKeyModal, setShowApiKeyModal] = useState(false);
-  const [apiKey, setApiKey] = useState("");
 
   // Update messages when action data changes
   useEffect(() => {
-    if (actionData && "userMessage" in actionData) {
-      // Add user message
-      setMessages(prev => [...prev, actionData.userMessage]);
+    const data = fetcher.data;
+    if (!data || fetcher.state !== "idle") return;
 
-      // Add assistant message if successful
-      if ("assistantMessage" in actionData) {
-        setMessages(prev => [...prev, actionData.assistantMessage]);
+    setMessages(prev => {
+      const next = [...prev];
+      if (data.userMessage) next.push(data.userMessage);
+      if ("assistantMessage" in data) {
+        next.push(data.assistantMessage);
+      } else {
+        // Honest system-level notice; never voiced as the assistant.
+        next.push({
+          id: `sys_${Date.now()}`,
+          role: "system",
+          content: data.error,
+          timestamp: new Date().toISOString(),
+        });
       }
-    }
-  }, [actionData]);
+      return next;
+    });
+  }, [fetcher.data, fetcher.state]);
 
-  const isProcessing = navigation.state === "submitting";
+  const isProcessing = fetcher.state !== "idle";
 
   return (
     <div className="h-screen flex flex-col">
-      <Form method="post" className="h-full">
-        <input type="hidden" name="history" value={JSON.stringify(messages)} />
-        <input type="hidden" name="content" id="message-content" />
-
-        <ChatInterface
-          messages={messages}
-          onSendMessage={content => {
-            // Set the content in the hidden input and submit the form
-            const input = document.getElementById(
-              "message-content"
-            ) as HTMLInputElement;
-            if (input) {
-              input.value = content;
-              input.form?.requestSubmit();
-            }
-          }}
-          isProcessing={isProcessing}
-          apiKeyConfigured={loaderData.apiKeyConfigured}
-          onConfigureApiKey={() => setShowApiKeyModal(true)}
-        />
-      </Form>
+      <ChatInterface
+        messages={messages}
+        onSendMessage={content => {
+          fetcher.submit(
+            { content, history: JSON.stringify(messages) },
+            { method: "post" }
+          );
+        }}
+        isProcessing={isProcessing}
+        apiKeyConfigured={loaderData.apiKeyConfigured}
+        onConfigureApiKey={() => setShowApiKeyModal(true)}
+      />
 
       {/* API Key Modal */}
       {showApiKeyModal && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
           <div className="bg-card rounded-lg shadow-xl max-w-md w-full p-6">
-            <h2 className="text-xl font-semibold mb-4">
-              Configure OpenAI API Key
-            </h2>
-            <p className="mb-4 text-sm opacity-80">
-              To use the full capabilities of Deep Tree Echo, please provide
-              your OpenAI API key. Your key is stored securely and only used for
-              generating AI responses.
+            <h2 className="text-xl font-semibold mb-4">Model Configuration</h2>
+            <p className="mb-2 text-sm opacity-80">
+              Replies are generated only by a real language model. The server
+              reads the key from the <code>OPENAI_API_KEY</code> environment
+              variable; set it and restart the server to enable chat.
+            </p>
+            <p className="mb-4 text-sm">
+              Status:{" "}
+              {loaderData.apiKeyConfigured
+                ? "API key configured on the server."
+                : "No API key configured - chat requests will fail."}
+            </p>
+            <p className="text-xs mb-4 opacity-70">
+              You can get an API key from the{" "}
+              <a
+                href="https://platform.openai.com/api-keys"
+                target="_blank"
+                rel="noreferrer"
+                className="text-primary hover:underline"
+              >
+                OpenAI dashboard
+              </a>
+              .
             </p>
 
-            <div className="mb-4">
-              <label
-                htmlFor="api-key"
-                className="block text-sm font-medium mb-1"
-              >
-                OpenAI API Key
-              </label>
-              <input
-                type="password"
-                id="api-key"
-                value={apiKey}
-                onChange={e => setApiKey(e.target.value)}
-                className="w-full bg-input border border-border rounded-md px-3 py-2"
-                placeholder="sk-..."
-              />
-              <p className="text-xs mt-1 opacity-70">
-                You can get your API key from the{" "}
-                <a
-                  href="https://platform.openai.com/api-keys"
-                  target="_blank"
-                  rel="noreferrer"
-                  className="text-primary hover:underline"
-                >
-                  OpenAI dashboard
-                </a>
-                .
-              </p>
-            </div>
-
-            <div className="flex justify-end space-x-3">
+            <div className="flex justify-end">
               <button
                 type="button"
                 onClick={() => setShowApiKeyModal(false)}
                 className="px-4 py-2 border border-border rounded-md"
               >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  // In a real app, this would save the API key to the server
-                  // For now, we'll just close the modal
-                  setShowApiKeyModal(false);
-                }}
-                className="px-4 py-2 bg-primary text-white rounded-md"
-                disabled={!apiKey.trim().startsWith("sk-")}
-              >
-                Save API Key
+                Close
               </button>
             </div>
           </div>
