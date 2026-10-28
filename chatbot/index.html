@@ -600,11 +600,26 @@
               Stream tokens as they are generated
             </label>
           </div>
+          <div class="character-field">
+            <button
+              class="btn"
+              type="button"
+              onclick="detectLocalModelIntoForm()"
+            >
+              Detect local model
+            </button>
+            <div id="local-detect-result" class="settings-note"></div>
+          </div>
           <p class="settings-note">
             Settings, including the API key, are stored only in this browser's
             localStorage and requests go directly from your browser to the URL
             above. The server must allow cross-origin requests (Ollama: set
-            OLLAMA_ORIGINS; NanEcho/server.py allows all origins).
+            OLLAMA_ORIGINS, e.g. <code>OLLAMA_ORIGINS="*" ollama serve</code>;
+            NanEcho/server.py allows all origins). With no settings saved, this
+            page looks for a model served on this computer (Ollama :11434,
+            llama.cpp :8080, LM Studio :1234, vLLM :8000, text-generation-webui
+            :5000, NanEcho :8000/:8081) and uses it only after the server
+            confirms a model is loaded.
           </p>
         </div>
         <div class="modal-actions">
@@ -633,6 +648,7 @@
       let chatHistory = [];
       let modelSettings = null;
       let requestInFlight = false;
+      let lastDiscoveryFailure = null;
 
       function storageGet(key) {
         try {
@@ -680,6 +696,11 @@
           );
         }
         loadCharacter();
+
+        if (!isConfigured()) {
+          await autoDiscoverLocalModel();
+        }
+        maybeGenerateOpening();
       }
 
       // ---------- Settings ----------
@@ -766,7 +787,165 @@
           addSystemNotice(
             "Model settings incomplete: a base URL (and, for OpenAI-compatible APIs, a model name) is required."
           );
+          return;
         }
+        lastDiscoveryFailure = null;
+        maybeGenerateOpening();
+      }
+
+      // ---------- Local model discovery ----------
+
+      // Candidates probed when no model is configured. A server counts only
+      // if it reports at least one served/loaded model.
+      const LOCAL_HOST = "127.0.0.1";
+      const LOCAL_CANDIDATES = [
+        { kind: "ollama", port: 11434, label: "Ollama" },
+        { kind: "openai", port: 8080, label: "llama.cpp server" },
+        { kind: "openai", port: 1234, label: "LM Studio" },
+        { kind: "openai", port: 8000, label: "vLLM" },
+        { kind: "openai", port: 5000, label: "text-generation-webui" },
+        { kind: "nanecho", port: 8000, label: "NanEcho server.py" },
+        { kind: "nanecho", port: 8081, label: "NanEcho neserver.py" },
+      ];
+
+      async function fetchJSONWithTimeout(url, ms) {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), ms);
+        try {
+          const response = await fetch(url, { signal: controller.signal });
+          if (!response.ok) throw new Error("HTTP " + response.status);
+          return await response.json();
+        } finally {
+          clearTimeout(timer);
+        }
+      }
+
+      // Returns { ok: true, settings, description } or { ok: false, url, reason }.
+      async function probeLocalCandidate(c) {
+        const origin = `http://${LOCAL_HOST}:${c.port}`;
+        const url =
+          c.kind === "ollama"
+            ? origin + "/api/tags"
+            : c.kind === "openai"
+              ? origin + "/v1/models"
+              : origin + "/status";
+        let data;
+        try {
+          data = await fetchJSONWithTimeout(url, 1500);
+        } catch (error) {
+          return {
+            ok: false,
+            url,
+            reason:
+              error.name === "AbortError"
+                ? "no answer"
+                : "unreachable (not running, or cross-origin requests blocked)",
+          };
+        }
+        if (c.kind === "nanecho") {
+          if (!data || data.model_loaded !== true) {
+            return { ok: false, url, reason: "no model loaded" };
+          }
+          return {
+            ok: true,
+            description: `NanEcho checkpoint via ${c.label} at ${origin}`,
+            settings: { apiType: "nanecho", baseUrl: origin, model: "" },
+          };
+        }
+        const ids =
+          c.kind === "ollama"
+            ? ((data && data.models) || []).map(m => m && (m.name || m.model))
+            : ((data && data.data) || []).map(m => m && m.id);
+        const models = ids.filter(id => typeof id === "string" && id);
+        if (models.length === 0) {
+          return { ok: false, url, reason: "answered but serves no model" };
+        }
+        return {
+          ok: true,
+          description: `${models[0]} via ${c.label} at ${origin}`,
+          settings: {
+            apiType: "openai",
+            baseUrl: origin + "/v1",
+            model: models[0],
+          },
+        };
+      }
+
+      // Probe all candidates concurrently; first verified one in priority
+      // order wins. Resolves { found, failures }.
+      async function discoverLocalModel() {
+        const results = await Promise.all(
+          LOCAL_CANDIDATES.map(probeLocalCandidate)
+        );
+        return {
+          found: results.find(r => r.ok) || null,
+          failures: results.filter(r => !r.ok),
+        };
+      }
+
+      function discoveryFailureText(failures) {
+        const origin =
+          location.origin && location.origin !== "null"
+            ? location.origin
+            : "null (page opened from a file)";
+        return (
+          "No locally served model was found. Probed: " +
+          failures.map(f => `${f.url} (${f.reason})`).join("; ") +
+          `. To use a local model: start one (e.g. \`ollama serve\` and \`ollama pull <model>\`) and allow this page's origin ${origin} for cross-origin requests (Ollama: OLLAMA_ORIGINS="*" ollama serve, or include this origin), then use 'Detect local model' in Model Settings. Or enter an OpenAI-compatible API or NanEcho server URL there.`
+        );
+      }
+
+      function applyDiscoveredSettings(found) {
+        const previous = modelSettings || {};
+        modelSettings = {
+          apiType: found.settings.apiType,
+          baseUrl: found.settings.baseUrl,
+          model: found.settings.model,
+          apiKey: "",
+          maxTokens: previous.maxTokens || 500,
+          temperature:
+            previous.temperature !== undefined ? previous.temperature : 0.7,
+          stream: previous.stream !== undefined ? previous.stream : true,
+        };
+        storageSet(SETTINGS_KEY, JSON.stringify(modelSettings));
+        updateModelStatus();
+      }
+
+      // Called on startup when nothing is configured.
+      async function autoDiscoverLocalModel() {
+        const { found, failures } = await discoverLocalModel();
+        if (!found) {
+          lastDiscoveryFailure = discoveryFailureText(failures);
+          renderMessages();
+          return false;
+        }
+        lastDiscoveryFailure = null;
+        applyDiscoveredSettings(found);
+        addSystemNotice(
+          "Using the locally served model " +
+            found.description +
+            " (verified it is serving a model). Change this in Model Settings."
+        );
+        return true;
+      }
+
+      // "Detect local model" button in the settings dialog: prefill the form.
+      async function detectLocalModelIntoForm() {
+        const out = document.getElementById("local-detect-result");
+        out.textContent = "Probing local model servers...";
+        const { found, failures } = await discoverLocalModel();
+        if (!found) {
+          out.textContent = discoveryFailureText(failures);
+          return;
+        }
+        document.getElementById("setting-api-type").value =
+          found.settings.apiType;
+        document.getElementById("setting-base-url").value =
+          found.settings.baseUrl;
+        document.getElementById("setting-model").value = found.settings.model;
+        document.getElementById("setting-api-key").value = "";
+        out.textContent =
+          "Found " + found.description + ". Press Save to use it.";
       }
 
       // ---------- Character ----------
@@ -852,6 +1031,7 @@
                     <h2>EchoSelf Chat</h2>
                     <p>Every reply is generated by the language model you configure under <strong>Model Settings</strong> (OpenAI-compatible API, Ollama, or a NanEcho server). The character card is used as the model's system prompt.</p>
                     <p>${configured ? "Send a message to start, or ask the model to write an opening message." : "No model is configured yet - open Model Settings to connect one."}</p>
+                    ${!configured && lastDiscoveryFailure ? `<p class="settings-note">${escapeHtml(lastDiscoveryFailure)}</p>` : ""}
                     ${
                       configured && characterData
                         ? '<button class="btn btn-primary" onclick="generateOpening()">Generate opening message</button>'
@@ -1057,9 +1237,10 @@
             err.partial = full;
             throw err;
           }
+          // server.py streams {token}; neserver.py streams {text, finished}
           const token =
             s.apiType === "nanecho"
-              ? parsed.token
+              ? parsed.token || parsed.text
               : parsed.choices &&
                 parsed.choices[0] &&
                 parsed.choices[0].delta &&
@@ -1068,6 +1249,7 @@
             full += token;
             onToken(token);
           }
+          if (s.apiType === "nanecho" && parsed.finished) break;
         }
         if (!full.trim()) {
           throw new Error("The model returned an empty response.");
@@ -1138,12 +1320,51 @@
         await runModelTurn();
       }
 
-      // Asks the model (not a fixed card greeting) to open the conversation.
+      // Greeting prompt template. The card's first_mes (and
+      // alternate_greetings) are style examples for the model; they are
+      // never displayed as the character's words.
+      function buildGreetingInstruction() {
+        const c = (characterData && characterData.data) || {};
+        const parts = [
+          `Write ${charName()}'s opening message to start a new conversation with the user, in character.`,
+        ];
+        const samples = [c.first_mes]
+          .concat(
+            Array.isArray(c.alternate_greetings) ? c.alternate_greetings : []
+          )
+          .filter(g => typeof g === "string" && g.trim())
+          .map(substitute);
+        if (samples.length) {
+          parts.push(
+            "The character card's sample greetings below show the intended style, tone, length and format (including any *action* narration). Treat them as a template, not a script: write a new greeting in your own words; do not copy them.\n\n" +
+              samples
+                .map((g, i) => `Sample greeting ${i + 1}:\n${g}`)
+                .join("\n\n")
+          );
+        }
+        return parts.join("\n\n");
+      }
+
+      // Asks the model to open the conversation (greeting prompt template).
       async function generateOpening() {
         if (requestInFlight) return;
-        await runModelTurn(
-          `Write ${charName()}'s opening message to start the conversation with the user.`
+        await runModelTurn(buildGreetingInstruction());
+      }
+
+      // Greet automatically when a conversation opens and a model is set.
+      function maybeGenerateOpening() {
+        const hasConversation = chatHistory.some(
+          m => m.role === "user" || m.role === "assistant"
         );
+        if (
+          !hasConversation &&
+          isConfigured() &&
+          characterData &&
+          characterData.data &&
+          !requestInFlight
+        ) {
+          generateOpening();
+        }
       }
 
       function handleKeyPress(event) {
@@ -1157,6 +1378,7 @@
           chatHistory = [];
           storageRemove(HISTORY_KEY);
           renderMessages();
+          maybeGenerateOpening();
         }
       }
 
@@ -1240,6 +1462,7 @@
               storageRemove(HISTORY_KEY);
               loadCharacter();
               alert("Character loaded successfully!");
+              maybeGenerateOpening();
             } else {
               alert(
                 "Invalid character card format. Please use a SillyTavern v2 or v3 character card."
