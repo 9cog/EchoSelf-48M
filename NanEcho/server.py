@@ -31,7 +31,10 @@ from pydantic import BaseModel, Field
 
 # Add the parent directory to sys.path to import nanoGPT modules
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from model import GPTConfig, GPT
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from echo_model import _import_gpt  # finds nanoGPT's model.py (repo root or nanoGPT/)
+from openai_compat import ModelAdapter, add_openai_routes
+GPTConfig, GPT = _import_gpt()
 
 # Configure logging
 logging.basicConfig(
@@ -76,7 +79,9 @@ class ModelConfig:
             checkpoint = torch.load(self.model_path, map_location=self.device, weights_only=False)
             
             # Configure model from checkpoint
-            gptconf = GPTConfig(**checkpoint['model_args'])
+            # NanEcho checkpoints carry extra model_args (e.g. echo_depth)
+            known = set(GPTConfig.__dataclass_fields__)
+            gptconf = GPTConfig(**{k: v for k, v in checkpoint['model_args'].items() if k in known})
             self.model = GPT(gptconf)
             
             # Handle potential prefix in state dict keys
@@ -839,6 +844,29 @@ def extract_recommendations(analysis: str) -> List[str]:
                     break
     
     return recommendations
+
+# --- OpenAI-compatible API ---
+# GET /v1/models and POST /v1/chat/completions, so that local model discovery
+# (e.g. Eva's echo/model/llm.scm, which probes port 8000) and other
+# OpenAI-compatible clients can use the loaded checkpoint. 503 when no model
+# is loaded.
+def _loaded_model_config() -> Optional[ModelConfig]:
+    mc = getattr(app.state, "model_config", None)
+    return mc if mc is not None and mc.model is not None else None
+
+add_openai_routes(app, ModelAdapter(
+    get_model=_loaded_model_config,
+    model_id=lambda mc: os.path.basename(mc.model_path),
+    build_prompt=lambda mc, messages: format_chat_prompt(
+        [ChatMessage(role=m["role"], content=m["content"]) for m in messages]),
+    complete=lambda mc, prompt, n, temperature, top_k: (lambda text: (
+        text, len(mc.tokenizer.encode(text))))(
+        mc.generate(prompt=prompt, max_new_tokens=n, temperature=temperature,
+                    top_k=top_k, stream=False)),
+    stream=lambda mc, prompt, n, temperature, top_k: mc.generate(
+        prompt=prompt, max_new_tokens=n, temperature=temperature, top_k=top_k, stream=True),
+    count_tokens=lambda mc, text: len(mc.tokenizer.encode(text)),
+))
 
 # --- Error Handling ---
 @app.exception_handler(HTTPException)

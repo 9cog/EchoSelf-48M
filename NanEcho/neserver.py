@@ -30,7 +30,8 @@ except ImportError as e:
     print("Please install: pip install fastapi uvicorn torch")
     sys.exit(1)
 
-from netalk import EchoModelConfig
+from netalk import EchoModelConfig, build_echo_prompt, format_chat_messages, last_user_text
+from openai_compat import ModelAdapter, add_openai_routes
 
 NOT_AVAILABLE_DETAIL = (
     "{feature} is not available: the NanEcho model has no {feature} state to report. "
@@ -115,13 +116,31 @@ def _require_model() -> EchoModelConfig:
     return model_config
 
 
+def _build_prompt(model: EchoModelConfig, messages: List[Dict[str, str]]) -> str:
+    """Conversation prompt for the checkpoint, prefixed by the topic prompt
+    template (netalk.ECHO_TOPIC_PROMPTS) chosen for the latest user message."""
+    return build_echo_prompt(model, format_chat_messages(messages), last_user_text(messages))
+
+
 def _format_prompt(messages: List[EchoChatMessage]) -> str:
-    prompt_parts = []
-    for msg in messages[-10:]:  # Last 10 messages for context
-        role = "User" if msg.role == "user" else "Echo"
-        prompt_parts.append(f"{role}: {msg.content}")
-    prompt_parts.append("Echo: ")
-    return "\n".join(prompt_parts)
+    model = _require_model()
+    try:
+        return _build_prompt(model, [{"role": m.role, "content": m.content} for m in messages])
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error building the prompt: {e}")
+
+
+# OpenAI-compatible /v1/models and /v1/chat/completions, so that local model
+# discovery (e.g. Eva's echo/model/llm.scm, port 8081) can find and use the
+# loaded checkpoint. Both answer 503 when no model is loaded.
+add_openai_routes(app, ModelAdapter(
+    get_model=lambda: model_config if model_config is not None and model_config.loaded else None,
+    model_id=lambda m: os.path.basename(m.model_path),
+    build_prompt=_build_prompt,
+    complete=lambda m, prompt, n, temperature, top_k: m.complete(prompt, n, temperature, top_k),
+    stream=lambda m, prompt, n, temperature, top_k: m.stream_tokens(prompt, n, temperature, top_k),
+    count_tokens=lambda m, text: len(m.encode(text)),
+))
 
 
 @app.get("/", response_model=Dict[str, Any])
@@ -133,7 +152,8 @@ async def root():
         "description": "API for chatting with the trained NanEcho model and inspecting its measured internals",
         "status": "active" if model_config is not None and model_config.loaded else "no_model",
         "endpoints": [
-            "/chat", "/chat/stream", "/introspect", "/echo/state", "/echo/attention", "/health"
+            "/chat", "/chat/stream", "/introspect", "/echo/state", "/echo/attention", "/health",
+            "/v1/models", "/v1/chat/completions"
         ]
     }
 

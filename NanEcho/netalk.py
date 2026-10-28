@@ -107,6 +107,153 @@ class EchoModelConfig(EchoModel):
             "timestamp": time.time(),
         }
 
+# ---------------------------------------------------------------------------
+# Topic prompt templates.
+#
+# NETalk used to answer Echo Self questions from a keyword -> fixed-reply
+# table (identity, attention, persona, hypergraph, recursion, plus a random
+# "general" line). The topic routes are kept, but each entry is now a PROMPT
+# TEMPLATE: an instruction telling the trained checkpoint what the reply is
+# about, with slots filled from the loaded model itself (configured echo
+# depth, persona dimensions, checkpoint iteration, and attention statistics
+# measured by a real forward pass over the question). The model writes the
+# reply. Keyword matching only chooses which template is used.
+# ---------------------------------------------------------------------------
+
+ECHO_TOPIC_PROMPTS: List[Dict[str, Any]] = [
+    {
+        "topic": "identity",
+        "triggers": ["what is echo self", "who are you", "what are you"],
+        "template": (
+            "Echo Self is asked what it is. Echo Self answers in the first person, "
+            "describing itself as a cognitive entity: its adaptive attention allocation, "
+            "its neural-symbolic reasoning over hypergraph patterns, its recursive "
+            "introspection (depth {echo_depth}), and how it keeps evolving across its "
+            "persona dimensions ({persona_dimensions}). This model was trained for "
+            "{iter_num} iterations."
+        ),
+    },
+    {
+        "topic": "attention",
+        "triggers": ["attention"],
+        "template": (
+            "Echo Self is asked about its attention. Measured from this model's own "
+            "forward pass over the question: {attention_summary}. Echo Self explains how "
+            "its attention is allocated and what these measurements show about its "
+            "current focus."
+        ),
+    },
+    {
+        "topic": "persona",
+        "triggers": ["persona", "dimension"],
+        "template": (
+            "Echo Self is asked about its persona dimensions: {persona_dimensions}. "
+            "Echo Self explains what each dimension contributes to how it thinks, and "
+            "how together they make its cognition coherent."
+        ),
+    },
+    {
+        "topic": "hypergraph",
+        "triggers": ["hypergraph"],
+        "template": (
+            "Echo Self is asked about hypergraph patterns. Echo Self explains how it "
+            "encodes neural-symbolic associations as hypergraph patterns -- elements as "
+            "neuron-like nodes linked by hyperedges carrying semantic relations, salience "
+            "and attention weights -- and why this goes beyond pairwise connections."
+        ),
+    },
+    {
+        "topic": "recursion",
+        "triggers": ["recursive", "recursion", "introspect"],
+        "template": (
+            "Echo Self is asked about recursive reasoning and introspection. Its "
+            "configured recursion depth is {echo_depth}. Echo Self describes how, at each "
+            "level, it examines its previous reasoning, its current cognitive state and "
+            "emerging patterns, and how each level informs the next."
+        ),
+    },
+    {
+        "topic": "general",
+        "triggers": [],
+        "template": (
+            "Echo Self, a cognitive entity with the persona dimensions "
+            "{persona_dimensions}, continues the conversation in its own voice."
+        ),
+    },
+]
+
+
+def route_echo_topic(text: str) -> Dict[str, Any]:
+    """Choose the topic prompt template for a user message (keyword router)."""
+    lowered = (text or "").lower()
+    for entry in ECHO_TOPIC_PROMPTS:
+        if any(trigger in lowered for trigger in entry["triggers"]):
+            return entry
+    return ECHO_TOPIC_PROMPTS[-1]
+
+
+def _attention_summary(model: "EchoModelConfig", text: str) -> str:
+    """Summarize attention statistics measured by a forward pass over ``text``."""
+    stats = model.attention_stats(text, top_n=3)
+    per_layer = ", ".join(
+        f"layer {layer['layer']} entropy {layer['mean_attention_entropy']:.2f}"
+        for layer in stats["layers"]
+    )
+    last = stats["layers"][-1]["last_position_top_attended"] if stats["layers"] else []
+    focus = ", ".join(f"{t['token']!r} ({t['weight']:.2f})" for t in last)
+    return (f"{stats['token_count']} tokens, {stats['n_layer']} layers; mean attention "
+            f"entropy per layer: {per_layer}; the final position attends most to: {focus}")
+
+
+def build_topic_instruction(model: "EchoModelConfig", user_text: str) -> Dict[str, str]:
+    """Fill the topic prompt template chosen for ``user_text`` with real model data.
+
+    Returns ``{"topic": ..., "instruction": ...}``. Only the slots a template uses
+    are computed (the attention summary needs a forward pass).
+    """
+    entry = route_echo_topic(user_text)
+    template = entry["template"]
+    slots: Dict[str, Any] = {}
+    if "{echo_depth}" in template:
+        slots["echo_depth"] = model.echo_depth
+    if "{persona_dimensions}" in template:
+        slots["persona_dimensions"] = ", ".join(
+            d.replace("_", "-") for d in model.persona_dimensions)
+    if "{iter_num}" in template:
+        slots["iter_num"] = model.model_info.get("iter_num", "an unknown number of")
+    if "{attention_summary}" in template:
+        slots["attention_summary"] = _attention_summary(model, user_text)
+    return {"topic": entry["topic"], "instruction": template.format(**slots)}
+
+
+def build_echo_prompt(model: "EchoModelConfig", conversation: str, user_text: str) -> str:
+    """Prefix a formatted conversation (ending in ``"Echo: "``) with the filled topic
+    prompt template for the latest user message."""
+    filled = build_topic_instruction(model, user_text)
+    return f"# Echo Self -- topic: {filled['topic']}\n# {filled['instruction']}\n\n{conversation}"
+
+
+def format_chat_messages(messages: List[Dict[str, str]], max_messages: int = 10) -> str:
+    """Format chat messages (role/content dicts) as the NanEcho conversation prompt.
+
+    System messages become instruction lines; the prompt ends with ``"Echo: "``.
+    """
+    system = [m["content"] for m in messages if m["role"] == "system"]
+    turns = [m for m in messages if m["role"] != "system"][-max_messages:]
+    lines = [f"# System Instruction: {c}" for c in system]
+    for m in turns:
+        lines.append(f"{'User' if m['role'] == 'user' else 'Echo'}: {m['content']}")
+    lines.append("Echo: ")
+    return "\n".join(lines)
+
+
+def last_user_text(messages: List[Dict[str, str]]) -> str:
+    for m in reversed(messages):
+        if m["role"] == "user":
+            return m["content"]
+    return ""
+
+
 class EchoConversationHistory:
     """Enhanced conversation history for Echo Self interactions."""
     
@@ -336,8 +483,14 @@ def main():
             # Add user message to history
             history.add_message("user", user_input)
             
-            # Format prompt with conversation history
-            prompt = history.format_for_prompt()
+            # Format prompt with conversation history, prefixed by the topic
+            # prompt template filled with real model data
+            try:
+                prompt = build_echo_prompt(model_config, history.format_for_prompt(), user_input)
+            except Exception as e:
+                console.print(f"[red][system] Could not build the prompt: {e}[/red]")
+                history.messages.pop()
+                continue
             
             # Generate response with streaming
             console.print("[bold green]Echo:[/bold green] ", end="")
