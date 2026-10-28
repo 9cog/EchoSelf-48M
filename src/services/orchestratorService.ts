@@ -300,13 +300,9 @@ export const useOrchestratorService = () => {
           [], // Empty history for direct response
           options
         );
-      } else if (deepTreeEchoAI.hasApiKey) {
-        return deepTreeEchoAI.generateResponse(prompt, options);
-      } else {
-        throw new Error(
-          "AI systems not initialized. Please configure an API key in settings."
-        );
       }
+      // Configured API or verified local model; an honest error otherwise
+      return deepTreeEchoAI.generateResponse(prompt, options);
     },
 
     // System status

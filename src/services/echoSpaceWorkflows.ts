@@ -241,7 +241,7 @@ Reply with ONLY a JSON object of this shape:
 
         const raw = await MardukScientistService.getInstance().generateResponse(
           prompt,
-          { architecturalMode: "system", temperature: 0.4 }
+          { architecturalMode: "system", temperature: 0.4, template: false }
         );
         const assessment = parseSandboxAssessment(raw);
 

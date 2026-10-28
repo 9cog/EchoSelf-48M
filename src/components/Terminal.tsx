@@ -7,6 +7,11 @@ import { supabase } from "../services/supabaseClient";
 import { setTerminalExecutionFunction } from "../contexts/OrchestratorContext";
 import { useMemory } from "../contexts/MemoryContext";
 import { useAppStore } from "../store/appStore";
+import {
+  describeModelError,
+  onModelChange,
+  resolveModel,
+} from "../services/modelProvider";
 import "xterm/css/xterm.css";
 
 const Terminal = () => {
@@ -25,6 +30,11 @@ const Terminal = () => {
   const [currentChat, setCurrentChat] = useState<string>("default");
   const [streamingResponse, setStreamingResponse] = useState<boolean>(false);
   const aiChat = useAIChat();
+  // Label of the resolved model, or null when none is (yet) verified
+  const [modelLabel, setModelLabel] = useState<string | null>(null);
+  // Ref for command handlers registered once with xterm
+  const modelLabelRef = useRef<string | null>(null);
+  modelLabelRef.current = modelLabel;
 
   // Real stored memories and project files. Refs keep them current for the
   // executor registered with the orchestrator at mount time.
@@ -58,26 +68,32 @@ const Terminal = () => {
   useEffect(() => {
     setTerminalMounted(true);
 
-    // Try to initialize AI Chat with stored API key
+    // Initialize AI Chat; the model is the configured one or a verified
+    // locally served model (resolved by modelProvider)
     const initializeAIChat = async () => {
-      const storedApiKey = localStorage.getItem("openai_api_key");
-      if (storedApiKey) {
-        try {
-          const { data } = await supabase.auth.getSession();
-          aiChat.initialize(storedApiKey, data.session?.user?.id);
-          aiChat.createChat(currentChat);
-        } catch (error) {
-          console.error("Error initializing AI Chat:", error);
-        }
+      try {
+        const { data } = await supabase.auth.getSession();
+        aiChat.initialize(undefined, data.session?.user?.id);
+      } catch (error) {
+        console.error("Error initializing AI Chat:", error);
       }
+      aiChat.createChat(currentChat);
     };
 
     initializeAIChat();
+    resolveModel().then(
+      endpoint => setModelLabel(endpoint.label),
+      () => setModelLabel(null)
+    );
+    const unsubscribeModel = onModelChange(endpoint =>
+      setModelLabel(endpoint ? endpoint.label : null)
+    );
 
     // Register the terminal execution function with the orchestrator
     setTerminalExecutionFunction(executeTerminalCommand);
 
     return () => {
+      unsubscribeModel();
       // Clean up terminal on unmount
       if (xtermRef.current) {
         xtermRef.current.dispose();
@@ -623,18 +639,15 @@ const Terminal = () => {
 
     if (args.length === 1) {
       // Just 'memory' command
-      if (aiChat.isInitialized()) {
-        term.write("Memory system active. Current status: operational\r\n");
-        term.write(`Current chat: \x1b[36m${currentChat}\x1b[0m\r\n`);
-        term.write(`AI integration: \x1b[32menabled\x1b[0m\r\n`);
-
-        // Show chat history statistics
-        const history = aiChat.getChatHistory(currentChat);
-        term.write(`Messages in current chat: ${history.length}\r\n`);
-      } else {
-        term.write("Memory system status: API key not configured\r\n");
-        term.write("Configure OpenAI API key to enable AI chat features\r\n");
-      }
+      term.write(`Current chat: \x1b[36m${currentChat}\x1b[0m\r\n`);
+      term.write(
+        modelLabelRef.current
+          ? `AI model: \x1b[32m${modelLabelRef.current}\x1b[0m\r\n`
+          : "AI model: not verified yet (configure one in Chat settings or serve a local model; checked on first use)\r\n"
+      );
+      // Show chat history statistics
+      const history = aiChat.getChatHistory(currentChat);
+      term.write(`Messages in current chat: ${history.length}\r\n`);
     } else if (args[1] === "clear") {
       aiChat.clearChat(currentChat);
       term.write(`Cleared chat history for "${currentChat}"\r\n`);
@@ -712,16 +725,6 @@ const Terminal = () => {
     if (!xtermRef.current) return;
 
     const term = xtermRef.current;
-
-    // If no API key, inform the user
-    if (!aiChat.isInitialized()) {
-      term.write(
-        "\x1b[33mAPI key not configured. AI chat features are disabled.\x1b[0m\r\n"
-      );
-      term.write("Configure OpenAI API key in Chat settings\r\n");
-      writePrompt();
-      return;
-    }
 
     if (args.length === 1) {
       // Just 'aichat' command without arguments
@@ -928,7 +931,7 @@ const Terminal = () => {
     } catch (error: unknown) {
       term.write("\r\x1b[K"); // Clear the "thinking" line
       term.write(
-        `\x1b[31mError: ${error instanceof Error ? error.message : "Unknown error"}\x1b[0m\r\n`
+        `\x1b[31m${describeModelError(error).replace(/\n/g, "\r\n")}\x1b[0m\r\n`
       );
     } finally {
       setStreamingResponse(false);
@@ -1044,10 +1047,12 @@ const Terminal = () => {
           )}
         </div>
         <div className="text-xs opacity-70">
-          {aiChat.isInitialized() ? (
-            <span className="text-green-400">AI Ready</span>
+          {modelLabel ? (
+            <span className="text-green-400" title={modelLabel}>
+              AI Ready
+            </span>
           ) : (
-            <span>AI Disabled</span>
+            <span>No model verified</span>
           )}
         </div>
       </div>

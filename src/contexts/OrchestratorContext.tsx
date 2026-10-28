@@ -5,6 +5,7 @@ import { supabase } from "../services/supabaseClient";
 import { RoomType } from "../components/EchoHomeMap";
 import { ToroidalDialogue } from "../types/ToroidalCognitive";
 import { ToroidalCognitiveService } from "../services/toroidalCognitiveService";
+import { describeModelError, resolveModel } from "../services/modelProvider";
 
 // Import Memory type but NOT useMemory
 type Memory = {
@@ -221,38 +222,43 @@ export const OrchestratorProvider: React.FC<{ children: React.ReactNode }> = ({
         // Check for existing Supabase session
         const { data } = await supabase.auth.getSession();
         if (data.session) {
-          // Initialize Mem0AI if API key is available
+          // Open the user's Mem0AI store (an API key is optional: the model
+          // may also be a verified locally served one)
           const storedApiKey = localStorage.getItem("openai_api_key");
-          if (storedApiKey) {
-            try {
-              mem0ai.initialize(storedApiKey, data.session.user.id);
-              setState(prev => ({
-                ...prev,
-                memoryIntegrationStatus: "active",
-                aiIntegrationStatus: "active",
-              }));
-
-              logSystemEvent({
-                type: "system_event",
-                description: "AI and Memory systems initialized successfully",
-                component: "orchestrator",
-              });
-            } catch (error) {
-              logSystemEvent({
-                type: "system_event",
-                description: "Error initializing AI systems",
-                component: "orchestrator",
-                data: { error },
-              });
-            }
-          } else {
-            setState(prev => ({
-              ...prev,
-              memoryIntegrationStatus: "inactive",
-              aiIntegrationStatus: "inactive",
-            }));
+          try {
+            mem0ai.initialize(storedApiKey || undefined, data.session.user.id);
+            setState(prev => ({ ...prev, memoryIntegrationStatus: "active" }));
+          } catch (error) {
+            setState(prev => ({ ...prev, memoryIntegrationStatus: "inactive" }));
+            logSystemEvent({
+              type: "system_event",
+              description: "Error initializing memory system",
+              component: "orchestrator",
+              data: { error },
+            });
           }
         }
+
+        // AI status reflects whether a model is actually available
+        resolveModel().then(
+          endpoint => {
+            setState(prev => ({ ...prev, aiIntegrationStatus: "active" }));
+            logSystemEvent({
+              type: "system_event",
+              description: `Language model available: ${endpoint.label}`,
+              component: "orchestrator",
+            });
+          },
+          error => {
+            setState(prev => ({ ...prev, aiIntegrationStatus: "inactive" }));
+            logSystemEvent({
+              type: "system_event",
+              description: "No language model available",
+              component: "orchestrator",
+              data: { error: describeModelError(error) },
+            });
+          }
+        );
 
         // Start periodic health checks
         const healthCheckInterval = setInterval(() => {

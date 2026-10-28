@@ -21,6 +21,11 @@ interface MardukOptions {
   maxTokens?: number;
   /** Force a template instead of keyword routing. */
   intent?: MardukIntent;
+  /**
+   * false = the prompt already carries its own instructions (e.g. a JSON
+   * task); no reply template is added.
+   */
+  template?: boolean;
   /** Receives real model tokens while streaming. */
   onToken?: (token: string) => void;
 }
@@ -183,7 +188,9 @@ class MardukScientistService {
     options: MardukOptions = {}
   ): Promise<string> {
     const instructions = [
-      renderPromptTemplate(this.buildTemplate(prompt, options)),
+      options.template === false
+        ? ""
+        : renderPromptTemplate(this.buildTemplate(prompt, options)),
       this.buildInstructions(options),
     ]
       .filter(Boolean)
