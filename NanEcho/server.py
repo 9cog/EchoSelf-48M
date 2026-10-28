@@ -157,18 +157,36 @@ class ModelConfig:
         Returns:
             The generated text as a string, excluding the original prompt.
         """
+        tokens = []
         with torch.no_grad():
             with torch.amp.autocast(device_type='cuda' if 'cuda' in self.device else 'cpu'):
-                y = self.model.generate(
-                    x, max_new_tokens, temperature=temperature, top_k=top_k
-                )
-                generated_text = self.tokenizer.decode(y[0].tolist())
-                # Remove the prompt from the generated text
-                prompt_text = self.tokenizer.decode(x[0].tolist())
-                if generated_text.startswith(prompt_text):
-                    generated_text = generated_text[len(prompt_text):]
-                return generated_text
-    
+                for _ in range(max_new_tokens):
+                    next_token = self._next_token(x, temperature, top_k)
+                    if next_token.item() == self.tokenizer.eot_token:
+                        break
+                    tokens.append(next_token.item())
+                    x = torch.cat((x, next_token), dim=1)
+        return self.tokenizer.decode(tokens)
+
+    def _next_token(self, x, temperature, top_k):
+        """Samples the next token id from the model (shape [1, 1]). Padded vocabulary entries,
+        which have no tokenizer mapping, are never sampled."""
+        block_size = getattr(self.model.config, 'block_size', 1024)
+        idx_cond = x if x.size(1) <= block_size else x[:, -block_size:]
+        output = self.model(idx_cond)
+        logits = output[0] if isinstance(output, tuple) else output
+        next_token_logits = logits[:, -1, :].float().clone()
+        n_vocab = self.tokenizer.n_vocab
+        if next_token_logits.size(-1) > n_vocab:
+            next_token_logits[:, n_vocab:] = float('-inf')
+        if temperature > 0:
+            next_token_logits = next_token_logits / temperature
+        if top_k > 0:
+            v, _ = torch.topk(next_token_logits, min(top_k, next_token_logits.size(-1)))
+            next_token_logits[next_token_logits < v[:, [-1]]] = float('-inf')
+        probs = torch.nn.functional.softmax(next_token_logits, dim=-1)
+        return torch.multinomial(probs, num_samples=1)
+
     async def _stream_generate(self, x, max_new_tokens, temperature, top_k):
         """
         Asynchronously generates and yields tokens one at a time from the model, enabling streaming text output.
@@ -180,37 +198,9 @@ class ModelConfig:
         """
         with torch.no_grad():
             with torch.amp.autocast(device_type='cuda' if 'cuda' in self.device else 'cpu'):
-                # Get the block size limit from model config
-                block_size = getattr(self.model.config, 'block_size', 1024)
 
                 for token_index in range(max_new_tokens):
-                    # Crop input if it exceeds block size
-                    idx_cond = x if x.size(1) <= block_size else x[:, -block_size:]
-
-                    # Forward pass - nanoGPT returns logits directly or (logits, loss)
-                    output = self.model(idx_cond)
-
-                    # Handle both return types
-                    if isinstance(output, tuple):
-                        logits = output[0]
-                    else:
-                        logits = output
-
-                    # Get logits for the next token and sample
-                    next_token_logits = logits[:, -1, :].clone()
-
-                    # Apply temperature
-                    if temperature > 0:
-                        next_token_logits = next_token_logits / temperature
-
-                    # Apply top-k filtering
-                    if top_k > 0:
-                        v, _ = torch.topk(next_token_logits, min(top_k, next_token_logits.size(-1)))
-                        next_token_logits[next_token_logits < v[:, [-1]]] = float('-inf')
-
-                    # Sample from the filtered distribution
-                    probs = torch.nn.functional.softmax(next_token_logits, dim=-1)
-                    next_token = torch.multinomial(probs, num_samples=1)
+                    next_token = self._next_token(x, temperature, top_k)
 
                     # Append the new token to the input
                     x = torch.cat((x, next_token), dim=1)
