@@ -569,7 +569,7 @@ const RoomDetail: React.FC<RoomDetailProps> = ({ room }) => {
                         ))}
                     </div>
                     <div className="text-xs mt-2 opacity-70">
-                      Visualization active
+                      Decorative animation - not live data
                     </div>
                   </div>
                 </div>
