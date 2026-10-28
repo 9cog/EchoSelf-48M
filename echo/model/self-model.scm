@@ -926,18 +926,28 @@ proper atomese.
 
 (State current-demo-mode default-mode)
 
+; psi-controlled rules that are never given a non-zero weight in any
+; mode, because they voice sentences that do not come from a language
+; model: the aiml rule answers from a scripted AIML corpus, the
+; random_sentence_* rules sample canned corpus sentences, and the
+; external chatbot-psi select_pln_answer rule speaks PLN/SuReal
+; generated sentences directly.
+(define rules-never-enabled
+	(map (lambda (s) (string-append psi-prefix-str s))
+		(list "aiml" "random_sentence_blogs" "random_sentence_pkd"
+			"random_sentence_kurzweil" "select_pln_answer")))
+
 ;----------
 (define-public (enable-all-demos)
 "
   This is the default mode. All the rules are given a weight of 0.9.
 "
-	; Turn these off by default.  The aiml and random_sentence_* rules
-	; produce scripted or corpus-sampled sentences rather than model
-	; output, so they are never enabled.
+	; Turn these off by default: the never-enabled speech rules (see
+	; `rules-never-enabled`) plus saliency-tracking, which has its own
+	; demo mode.
 	(define rules-not-to-be-enabled
-		(map (lambda (s) (string-append psi-prefix-str s))
-		(list "aiml" "random_sentence_blogs" "random_sentence_pkd"
-			"random_sentence_kurzweil" "saliency-tracking")))
+		(cons (string-append psi-prefix-str "saliency-tracking")
+			rules-never-enabled))
 
 	(psi-controller-occupy)
 
@@ -962,10 +972,12 @@ proper atomese.
 
 	(for-each
 		(lambda (r)
-			(if (member (cog-name (car (psi-rule-alias r))) rules-to-be-enabled)
-				(psi-rule-set-atomese-weight r 0.9)
-				(psi-rule-set-atomese-weight r 0.0)
-			))
+			(let ((alias (cog-name (car (psi-rule-alias r)))))
+				(if (and (member alias rules-to-be-enabled)
+						(not (member alias rules-never-enabled)))
+					(psi-rule-set-atomese-weight r 0.9)
+					(psi-rule-set-atomese-weight r 0.0)
+				)))
 		(psi-get-controlled-rules)
 	)
 
@@ -998,9 +1010,15 @@ proper atomese.
 
 (define-public (enable-pln-demo)
 "
-  Enables the openpsi-pln rule.
+  Reasoning demo.  The external chatbot-psi select_pln_answer rule is
+  NOT enabled: it would voice PLN/SuReal sentences that no language
+  model wrote (see `rules-never-enabled`).  There is no hook in this
+  repository to read that rule's PLN results, so they cannot be passed
+  as {facts} into Eva's interrogative-answered prompt template either.
+  The reasoning mode therefore keeps the default, model-backed rule
+  weights; select_pln_answer stays at weight 0.
 "
-	(enable-demo-rules (list "select_pln_answer"))
+	(enable-all-demos)
 )
 
 ; For debugging
