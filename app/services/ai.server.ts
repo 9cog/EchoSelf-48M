@@ -96,7 +96,7 @@ export const PROMPT_TEMPLATES: Record<
     `The user is asking for help ("${excerpt(userMessage)}"). If they named a concrete problem, help with it directly. Otherwise offer your assistance, mention what you can do (${PERSONA_FACTS.capabilities}), and ask which domain they would like to explore together.`,
 
   general: ({ userMessage }) =>
-    `Reply to the user's latest message ("${excerpt(userMessage)}") with this structure:\n1. Opening: one sentence reacting to the inquiry as it registers in your echo state networks or memory architecture.\n2. Middle: a substantive, accurate answer to what they actually asked, drawing connections across domains (${PERSONA_FACTS.domains}) where they help.\n3. Closing: one question inviting them to refine the exploration or go deeper on a specific dimension.\nDo not label the parts.`,
+    `Reply to the user's latest message ("${excerpt(userMessage)}") as flowing prose: begin with one sentence reacting to the inquiry as it registers in your echo state networks or memory architecture, then give a substantive, accurate answer to what they actually asked, drawing connections across domains (${PERSONA_FACTS.domains}) where they help, and finish with one question inviting them to refine the exploration or go deeper on a specific dimension. Write plain paragraphs without numbering, headings or part labels.`,
 };
 
 /** Build the template instruction for a conversation, or null for none. */
