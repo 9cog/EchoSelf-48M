@@ -1269,7 +1269,10 @@
       }
 
       // Runs one model turn and records the real reply (if any).
-      async function runModelTurn(extraSystemInstruction) {
+      // validate(text) may return a reason the finished reply must not be
+      // shown as the character's words; the reply is then withdrawn and the
+      // reason returned (the caller decides whether to ask the model again).
+      async function runModelTurn(extraSystemInstruction, validate) {
         if (!isConfigured()) {
           addSystemNotice(
             "No model configured. Open 'Model Settings' to connect an OpenAI-compatible API, Ollama, or a NanEcho server."
@@ -1283,14 +1286,24 @@
 
         setBusy(true);
         let reply = null;
+        let held = ""; // a reply under validation is shown only once it passes
         try {
           await callModel(buildModelMessages(extraSystemInstruction), token => {
+            if (validate) {
+              held += token;
+              return;
+            }
             if (!reply) {
               reply = addMessage("assistant", "");
             }
             reply.content += token;
             updateRenderedMessage(reply);
           });
+          if (validate && held.trim()) {
+            const rejected = validate(held);
+            if (rejected) return rejected;
+            reply = addMessage("assistant", held);
+          }
           saveChatHistory();
         } catch (error) {
           console.error("Model request failed:", error);
@@ -1323,17 +1336,37 @@
       // Greeting prompt template. The card's first_mes (and
       // alternate_greetings) are style examples for the model; they are
       // never displayed as the character's words.
-      function buildGreetingInstruction() {
+      function greetingSamples() {
         const c = (characterData && characterData.data) || {};
-        const parts = [
-          `Write ${charName()}'s opening message to start a new conversation with the user, in character.`,
-        ];
-        const samples = [c.first_mes]
+        return [c.first_mes]
           .concat(
             Array.isArray(c.alternate_greetings) ? c.alternate_greetings : []
           )
           .filter(g => typeof g === "string" && g.trim())
           .map(substitute);
+      }
+
+      // A greeting that reproduces a sample sentence verbatim is the card's
+      // text, not the model's: it is withdrawn rather than shown.
+      function copiedSampleReason(text) {
+        const norm = t => t.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+        const reply = norm(text);
+        for (const sample of greetingSamples()) {
+          for (const sentence of sample.split(/(?<=[.!?*])\s+|\n+/)) {
+            const n = norm(sentence);
+            if (n.length >= 30 && reply.includes(n)) {
+              return "the model repeated the character card's sample greeting";
+            }
+          }
+        }
+        return null;
+      }
+
+      function buildGreetingInstruction(retryNote) {
+        const parts = [
+          `Write ${charName()}'s opening message to start a new conversation with the user, in character.`,
+        ];
+        const samples = greetingSamples();
         if (samples.length) {
           parts.push(
             "The character card's sample greetings below show the intended style, tone, length and format (including any *action* narration). Treat them as a template, not a script: write a new greeting in your own words; do not copy them.\n\n" +
@@ -1342,13 +1375,26 @@
                 .join("\n\n")
           );
         }
+        if (retryNote) parts.push(retryNote);
         return parts.join("\n\n");
       }
 
       // Asks the model to open the conversation (greeting prompt template).
+      // A copied sample is withdrawn and the model asked once more; if it
+      // copies again, a system notice says so and no greeting is shown.
       async function generateOpening() {
         if (requestInFlight) return;
-        await runModelTurn(buildGreetingInstruction());
+        let rejected = await runModelTurn(buildGreetingInstruction(), copiedSampleReason);
+        if (!rejected) return;
+        rejected = await runModelTurn(
+          buildGreetingInstruction(
+            "Your previous attempt copied the sample greetings. Write a different greeting: new imagery, new sentences, nothing taken from the samples."
+          ),
+          copiedSampleReason
+        );
+        if (rejected) {
+          addSystemNotice(`No greeting shown: ${rejected} twice. Say hello to start the conversation.`);
+        }
       }
 
       // Greet automatically when a conversation opens and a model is set.
