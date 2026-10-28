@@ -7,21 +7,19 @@
 
 import type { InferenceConfig } from "./types";
 import process from "node:process";
+import {
+  AIConfigurationError,
+  resolveModel,
+  withResolvedModel,
+  type ResolvedModel,
+} from "../modelProvider.server";
+
+export { AIConfigurationError };
 
 /**
  * AI Provider types
  */
 export type AIProvider = "openai" | "huggingface" | "nanecho" | "local";
-
-/**
- * Thrown when no real model provider is configured.
- */
-export class AIConfigurationError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "AIConfigurationError";
-  }
-}
 
 /**
  * Read an error body from a failed response without assuming JSON.
@@ -112,45 +110,67 @@ export interface AIAdapter {
 export class OpenAIAdapter implements AIAdapter {
   private apiKey: string;
   private baseURL: string;
+  private model?: string;
 
-  constructor(apiKey?: string, baseURL?: string) {
-    this.apiKey = apiKey || process.env.OPENAI_API_KEY || "";
-    this.baseURL = baseURL || "https://api.openai.com/v1";
+  /**
+   * @param apiKey  required for the hosted OpenAI API; local
+   *                OpenAI-compatible servers (Ollama, llama.cpp, LM Studio,
+   *                vLLM) need none
+   * @param baseURL OpenAI-compatible base URL (default: hosted OpenAI)
+   * @param model   model served at baseURL; overrides config.model
+   */
+  constructor(apiKey?: string, baseURL?: string, model?: string) {
+    this.baseURL = (baseURL || "https://api.openai.com/v1").replace(/\/+$/, "");
+    this.apiKey = apiKey || (baseURL ? "" : process.env.OPENAI_API_KEY || "");
+    this.model = model;
+  }
+
+  private headers(): Record<string, string> {
+    if (!this.apiKey && this.baseURL === "https://api.openai.com/v1") {
+      throw new AIConfigurationError("OpenAI API key not configured");
+    }
+    return {
+      "Content-Type": "application/json",
+      ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
+    };
+  }
+
+  private body(
+    messages: Array<{ role: string; content: string }>,
+    config: InferenceConfig,
+    stream: boolean
+  ): string {
+    return JSON.stringify({
+      model: this.model || config.model || "gpt-3.5-turbo",
+      messages,
+      temperature: config.temperature,
+      max_tokens: config.maxTokens,
+      top_p: config.topP,
+      stream,
+    });
   }
 
   async generate(
     messages: Array<{ role: string; content: string }>,
     config: InferenceConfig
   ): Promise<AIResponse> {
-    if (!this.apiKey) {
-      throw new Error("OpenAI API key not configured");
-    }
-
     const response = await fetch(`${this.baseURL}/chat/completions`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${this.apiKey}`,
-      },
-      body: JSON.stringify({
-        model: config.model || "gpt-3.5-turbo",
-        messages,
-        temperature: config.temperature,
-        max_tokens: config.maxTokens,
-        top_p: config.topP,
-        stream: false,
-      }),
+      headers: this.headers(),
+      body: this.body(messages, config, false),
     });
 
     if (!response.ok) {
-      throw new Error(`OpenAI API error: ${await readErrorDetail(response)}`);
+      throw new Error(
+        `Model API error (${this.baseURL}): ${await readErrorDetail(response)}`
+      );
     }
 
     const data = await response.json();
     const choice = data.choices?.[0];
     const content: string | undefined = choice?.message?.content;
     if (!content || !content.trim()) {
-      throw new Error("OpenAI API returned an empty completion");
+      throw new Error("The model returned an empty completion");
     }
 
     return {
@@ -165,28 +185,16 @@ export class OpenAIAdapter implements AIAdapter {
     config: InferenceConfig,
     onChunk: StreamCallback
   ): Promise<AIResponse> {
-    if (!this.apiKey) {
-      throw new Error("OpenAI API key not configured");
-    }
-
     const response = await fetch(`${this.baseURL}/chat/completions`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${this.apiKey}`,
-      },
-      body: JSON.stringify({
-        model: config.model || "gpt-3.5-turbo",
-        messages,
-        temperature: config.temperature,
-        max_tokens: config.maxTokens,
-        top_p: config.topP,
-        stream: true,
-      }),
+      headers: this.headers(),
+      body: this.body(messages, config, true),
     });
 
     if (!response.ok) {
-      throw new Error(`OpenAI API error: ${await readErrorDetail(response)}`);
+      throw new Error(
+        `Model API error (${this.baseURL}): ${await readErrorDetail(response)}`
+      );
     }
 
     let fullContent = "";
@@ -215,7 +223,7 @@ export class OpenAIAdapter implements AIAdapter {
     }
 
     if (!fullContent.trim()) {
-      throw new Error("OpenAI API returned an empty completion");
+      throw new Error("The model returned an empty completion");
     }
 
     return {
@@ -413,14 +421,22 @@ export class NanEchoAdapter implements AIAdapter {
     let fullContent = "";
     for await (const data of readSSEData(response)) {
       if (data === "[DONE]") break;
-      const parsed = JSON.parse(data) as { token?: string; error?: string };
+      // server.py sends {token}, neserver.py sends {text, finished}.
+      const parsed = JSON.parse(data) as {
+        token?: string;
+        text?: string;
+        error?: string;
+        finished?: boolean;
+      };
       if (parsed.error) {
         throw new Error(`NanEcho generation error: ${parsed.error}`);
       }
-      if (parsed.token) {
-        fullContent += parsed.token;
-        onChunk(parsed.token);
+      const token = parsed.token ?? parsed.text;
+      if (token) {
+        fullContent += token;
+        onChunk(token);
       }
+      if (parsed.finished) break;
     }
 
     if (!fullContent.trim()) {
@@ -428,6 +444,73 @@ export class NanEchoAdapter implements AIAdapter {
     }
 
     return { content: fullContent, finishReason: "stop" };
+  }
+}
+
+/**
+ * Build the adapter for an endpoint chosen by the shared resolver
+ * (app/services/modelProvider.server.ts). Local OpenAI-compatible servers
+ * go through the OpenAI adapter with their own base URL and no key.
+ */
+export function createAdapterForModel(model: ResolvedModel): AIAdapter {
+  switch (model.kind) {
+    case "openai-compatible":
+      return new OpenAIAdapter(model.apiKey, model.baseURL, model.model);
+    case "huggingface":
+      return new HuggingFaceAdapter(model.apiKey, model.model);
+    case "nanecho":
+      return new NanEchoAdapter(model.baseURL);
+  }
+}
+
+/**
+ * Adapter that resolves the model endpoint on first use (explicit config,
+ * else a verified local model server) and re-resolves after a connection
+ * failure. It never answers on its own: with no model available it throws
+ * AIConfigurationError.
+ */
+export class ResolvedModelAdapter implements AIAdapter {
+  private adapters = new Map<ResolvedModel, AIAdapter>();
+
+  private adapterFor(model: ResolvedModel): AIAdapter {
+    let adapter = this.adapters.get(model);
+    if (!adapter) {
+      adapter = createAdapterForModel(model);
+      this.adapters.set(model, adapter);
+    }
+    return adapter;
+  }
+
+  /** The endpoint the next request will use. */
+  resolve(): Promise<ResolvedModel> {
+    return resolveModel();
+  }
+
+  generate(
+    messages: Array<{ role: string; content: string }>,
+    config: InferenceConfig
+  ): Promise<AIResponse> {
+    return withResolvedModel(model =>
+      this.adapterFor(model).generate(messages, config)
+    );
+  }
+
+  generateStream(
+    messages: Array<{ role: string; content: string }>,
+    config: InferenceConfig,
+    onChunk: StreamCallback
+  ): Promise<AIResponse> {
+    let streamed = false;
+    return withResolvedModel(model => {
+      if (streamed) {
+        // Tokens already reached the caller; do not start a second reply.
+        throw new Error("Model connection lost during streaming");
+      }
+      return this.adapterFor(model).generateStream(messages, config, chunk => {
+        streamed = true;
+        onChunk(chunk);
+      });
+    });
   }
 }
 
@@ -441,12 +524,21 @@ export class AIServiceFactory {
   ): AIAdapter {
     switch (provider) {
       case "openai":
-        return new OpenAIAdapter(options?.apiKey, options?.baseURL);
+        return new OpenAIAdapter(
+          options?.apiKey,
+          options?.baseURL,
+          options?.model
+        );
       case "huggingface":
         return new HuggingFaceAdapter(options?.apiKey, options?.model);
       case "nanecho":
-      case "local":
         return new NanEchoAdapter(options?.baseURL);
+      case "local":
+        // An explicit local OpenAI-compatible server, or auto-discovery of a
+        // verified local model server.
+        return options?.baseURL
+          ? new OpenAIAdapter(options.apiKey, options.baseURL, options.model)
+          : new ResolvedModelAdapter();
       default:
         throw new AIConfigurationError(
           `Unknown AI provider: ${String(provider)}`
@@ -456,23 +548,11 @@ export class AIServiceFactory {
 }
 
 /**
- * Get default AI adapter based on environment.
- * Throws when no real model provider is configured.
+ * Get the default AI adapter: explicit configuration (ECHO_MODEL_BASE_URL,
+ * OPENAI_API_KEY, HUGGINGFACE_API_KEY, NANECHO_URL) or a verified locally
+ * served model, resolved on first use. Requests throw AIConfigurationError
+ * when no model is available.
  */
 export function getDefaultAdapter(): AIAdapter {
-  if (process.env.OPENAI_API_KEY) {
-    return AIServiceFactory.createAdapter("openai");
-  }
-
-  if (process.env.HUGGINGFACE_API_KEY) {
-    return AIServiceFactory.createAdapter("huggingface");
-  }
-
-  if (process.env.NANECHO_URL) {
-    return AIServiceFactory.createAdapter("nanecho");
-  }
-
-  throw new AIConfigurationError(
-    "No AI model provider is configured. Set OPENAI_API_KEY, HUGGINGFACE_API_KEY, or NANECHO_URL (URL of a running NanEcho/server.py)."
-  );
+  return new ResolvedModelAdapter();
 }

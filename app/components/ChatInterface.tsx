@@ -66,7 +66,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
             <button
               onClick={onConfigureApiKey}
               className="p-1 rounded-md text-yellow-400 hover:bg-yellow-400/20"
-              title="API Key not configured"
+              title="No language model available"
             >
               <FiInfo size={18} />
             </button>
@@ -127,9 +127,11 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
               {!apiKeyConfigured && (
                 <div className="bg-yellow-500/20 text-yellow-400 p-3 rounded-md text-sm">
                   <p>
-                    No model is configured. Set <code>OPENAI_API_KEY</code> on
-                    the server to enable replies; until then requests will fail
-                    with an error.
+                    No language model is available. Serve a local model (e.g.{" "}
+                    <code>ollama serve</code> + <code>ollama pull</code>) or set{" "}
+                    <code>ECHO_MODEL_BASE_URL</code> /{" "}
+                    <code>OPENAI_API_KEY</code> on the server; until then
+                    requests will fail with an error.
                   </p>
                   <button
                     onClick={onConfigureApiKey}

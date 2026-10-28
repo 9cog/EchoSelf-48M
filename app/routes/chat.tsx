@@ -1,33 +1,56 @@
 import { json, type ActionFunctionArgs } from "@remix-run/node";
 import { useFetcher, useLoaderData } from "@remix-run/react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import ChatInterface, { Message } from "~/components/ChatInterface";
 import { getAIService } from "~/services/ai.server";
 
 export async function loader() {
   const aiService = getAIService();
+  // Resolves the configured model, or discovers and verifies a locally
+  // served one (Ollama, llama.cpp, LM Studio, vLLM, NanEcho).
+  const modelStatus = await aiService.getModelStatus();
 
-  return json({
-    apiKeyConfigured: aiService.isInitialized(),
-  });
+  return json({ modelStatus });
 }
 
 type ChatActionData =
-  | { userMessage: Message; assistantMessage: Message; success: true }
+  | { userMessage?: Message; assistantMessage: Message; success: true }
   | { userMessage?: Message; error: string };
 
 export async function action({ request }: ActionFunctionArgs) {
   const formData = await request.formData();
+  const intent = formData.get("intent");
   const content = formData.get("content") as string;
   const history = JSON.parse(
     (formData.get("history") as string) || "[]"
   ) as Message[];
 
+  const aiService = getAIService();
+
+  // A new conversation opens: the model writes the greeting from the
+  // "opening" prompt template.
+  if (intent === "opening") {
+    try {
+      const greeting = await aiService.generateGreeting();
+      return json<ChatActionData>({
+        assistantMessage: {
+          id: `msg_${Date.now()}`,
+          role: "assistant",
+          content: greeting,
+          timestamp: new Date().toISOString(),
+        },
+        success: true,
+      });
+    } catch (error) {
+      console.error("Error generating opening message:", error);
+      const reason = error instanceof Error ? error.message : String(error);
+      return json<ChatActionData>({ error: `Model request failed: ${reason}` });
+    }
+  }
+
   if (!content) {
     return json<ChatActionData>({ error: "Message content is required" });
   }
-
-  const aiService = getAIService();
 
   // Add user message to history
   const userMessage: Message = {
@@ -82,6 +105,28 @@ export default function ChatPage() {
   const fetcher = useFetcher<ChatActionData>();
   const [messages, setMessages] = useState<Message[]>([]);
   const [showApiKeyModal, setShowApiKeyModal] = useState(false);
+  const { modelStatus } = loaderData;
+  const openingRequested = useRef(false);
+
+  // When the conversation opens, ask the model for its greeting (opening
+  // prompt template). Without a model, show an honest system notice.
+  useEffect(() => {
+    if (openingRequested.current) return;
+    openingRequested.current = true;
+    if (modelStatus.available) {
+      fetcher.submit({ intent: "opening" }, { method: "post" });
+    } else {
+      setMessages([
+        {
+          id: `sys_${Date.now()}`,
+          role: "system",
+          content: modelStatus.error ?? "No language model is available.",
+          timestamp: new Date().toISOString(),
+        },
+      ]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Update messages when action data changes
   useEffect(() => {
@@ -119,7 +164,7 @@ export default function ChatPage() {
           );
         }}
         isProcessing={isProcessing}
-        apiKeyConfigured={loaderData.apiKeyConfigured}
+        apiKeyConfigured={modelStatus.available}
         onConfigureApiKey={() => setShowApiKeyModal(true)}
       />
 
@@ -129,28 +174,26 @@ export default function ChatPage() {
           <div className="bg-card rounded-lg shadow-xl max-w-md w-full p-6">
             <h2 className="text-xl font-semibold mb-4">Model Configuration</h2>
             <p className="mb-2 text-sm opacity-80">
-              Replies are generated only by a real language model. The server
-              reads the key from the <code>OPENAI_API_KEY</code> environment
-              variable; set it and restart the server to enable chat.
+              Replies are generated only by a real language model, hosted or
+              local. The server uses, in order: <code>ECHO_MODEL_BASE_URL</code>{" "}
+              (+ <code>ECHO_MODEL_NAME</code>, <code>ECHO_MODEL_API_KEY</code>),{" "}
+              <code>OPENAI_API_KEY</code>, <code>HUGGINGFACE_API_KEY</code>,{" "}
+              <code>NANECHO_URL</code>; otherwise it looks for a model served
+              locally (Ollama, llama.cpp, LM Studio, vLLM,
+              text-generation-webui, NanEcho) and uses it once it confirms a
+              model is loaded. No API key is needed for local models.
             </p>
             <p className="mb-4 text-sm">
               Status:{" "}
-              {loaderData.apiKeyConfigured
-                ? "API key configured on the server."
-                : "No API key configured - chat requests will fail."}
+              {modelStatus.available
+                ? `Using ${modelStatus.description}.`
+                : "No model available - chat requests will fail."}
             </p>
-            <p className="text-xs mb-4 opacity-70">
-              You can get an API key from the{" "}
-              <a
-                href="https://platform.openai.com/api-keys"
-                target="_blank"
-                rel="noreferrer"
-                className="text-primary hover:underline"
-              >
-                OpenAI dashboard
-              </a>
-              .
-            </p>
+            {!modelStatus.available && modelStatus.error && (
+              <pre className="text-xs mb-4 opacity-70 whitespace-pre-wrap">
+                {modelStatus.error}
+              </pre>
+            )}
 
             <div className="flex justify-end">
               <button

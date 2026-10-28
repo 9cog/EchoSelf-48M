@@ -6,6 +6,7 @@
  */
 
 import type {
+  CharacterProfile,
   LaylaCharacter,
   ConversationMessage,
   ConversationContext,
@@ -16,6 +17,38 @@ import type {
 } from "./types";
 import { getCharacter, getDefaultCharacter } from "./characters";
 import { getDefaultAdapter, type AIAdapter } from "./aiIntegration";
+
+/**
+ * Greeting prompt template: when a conversation opens, the character
+ * introduces itself and asks how it can help. The model writes the words.
+ */
+const GREETING_TEMPLATE = (character: CharacterProfile): string =>
+  `A user has just opened a conversation with you and has not written anything yet. Greet them as ${character.name}: introduce yourself by name, say in a few words what you are like (${character.description}; traits: ${character.traits.join(", ")}), and ask how you can help today. One or two sentences, in your own voice.`;
+
+type TaskTemplate = (slots: {
+  character: string;
+  description: string;
+  input: string;
+}) => string;
+
+/**
+ * Prompt templates for task types the model itself can perform. Task types
+ * without an entry ("remember", "schedule", "remind") need an executor
+ * (memory store, scheduler) and are reported as not executed.
+ */
+const TASK_TEMPLATES: Partial<Record<TaskType, TaskTemplate>> = {
+  summarize: ({ description, input }) =>
+    `Task: ${description || "Summarize the input."}\nWrite a concise, faithful summary of the input below. Keep the key facts and conclusions; add nothing that is not in it.\n\nInput:\n${input}`,
+  analyze: ({ description, input }) =>
+    `Task: ${description || "Analyze the input."}\nAnalyze the input below: identify its main points, patterns, strengths, weaknesses or risks, and give your conclusions. Say clearly where the input does not support a conclusion.\n\nInput:\n${input}`,
+  create: ({ character, description, input }) =>
+    `Task: ${description || "Create the requested content."}\nAs ${character}, create the requested content. Use the input below as material and constraints.\n\nInput:\n${input}`,
+};
+
+function formatTaskInput(input: unknown): string {
+  if (input === undefined || input === null || input === "") return "(none)";
+  return typeof input === "string" ? input : JSON.stringify(input, null, 2);
+}
 
 /**
  * Default inference configuration
@@ -48,6 +81,7 @@ export class EchoLaylaService {
   private inferenceConfig: InferenceConfig = { ...DEFAULT_INFERENCE_CONFIG };
   private privacySettings: PrivacySettings = { ...DEFAULT_PRIVACY_SETTINGS };
   private tasks: Map<string, AutomationTask> = new Map();
+  private taskRuns: Map<string, Promise<void>> = new Map();
   // Resolved lazily so a missing provider surfaces as an error on use.
   private aiAdapter?: AIAdapter;
 
@@ -58,7 +92,7 @@ export class EchoLaylaService {
     console.log("[EchoLayla] Initializing service...");
 
     // Load saved settings from localStorage if available
-    if (typeof window !== "undefined") {
+    if (typeof localStorage !== "undefined") {
       this.loadSettings();
     }
 
@@ -214,6 +248,52 @@ export class EchoLaylaService {
   }
 
   /**
+   * Run one model turn on the current context with an extra prompt-template
+   * instruction appended (model input only). Returns the model's text.
+   */
+  private async generateWithInstruction(instruction: string): Promise<string> {
+    const character = this.getActiveCharacterProfile();
+    if (!this.currentContext) {
+      this.startNewContext();
+    }
+    const messages = [
+      {
+        role: "system",
+        content: this.inferenceConfig.systemPrompt || character.systemPrompt,
+      },
+      ...this.currentContext!.messages.filter(msg => msg.role !== "system").map(
+        msg => ({
+          role: msg.role === "assistant" ? "assistant" : "user",
+          content: msg.content,
+        })
+      ),
+      { role: "system", content: instruction },
+    ];
+    if (!this.aiAdapter) {
+      this.aiAdapter = getDefaultAdapter();
+    }
+    const response = await this.aiAdapter.generate(
+      messages,
+      this.inferenceConfig
+    );
+    if (!response.content || !response.content.trim()) {
+      throw new Error("The model returned an empty response");
+    }
+    return response.content.trim();
+  }
+
+  /**
+   * The active character greets the user when a conversation opens. The
+   * greeting template is an instruction; the model writes the greeting.
+   */
+  async generateGreeting(): Promise<ConversationMessage> {
+    const content = await this.generateWithInstruction(
+      GREETING_TEMPLATE(this.getActiveCharacterProfile())
+    );
+    return this.addMessage("assistant", content);
+  }
+
+  /**
    * Set AI adapter (for testing or custom providers)
    */
   setAIAdapter(adapter: AIAdapter): void {
@@ -221,7 +301,8 @@ export class EchoLaylaService {
   }
 
   /**
-   * Create an automation task
+   * Create an automation task. Processing starts immediately and runs
+   * asynchronously; poll getTask() or use runTask() to await the result.
    */
   createTask(
     type: TaskType,
@@ -240,26 +321,96 @@ export class EchoLaylaService {
 
     this.tasks.set(task.id, task);
 
-    // Attempt to process the task
-    this.processTask(task.id);
+    // Start processing task asynchronously
+    this.processTask(task.id).catch(error =>
+      console.error("[EchoLayla] Task processing failed:", error)
+    );
 
     return task;
   }
 
   /**
-   * Process an automation task
+   * Create a task and wait until it has completed or failed.
    */
-  private processTask(taskId: string): void {
-    const task = this.tasks.get(taskId);
-    if (!task) return;
+  async runTask(
+    type: TaskType,
+    description: string,
+    input: unknown
+  ): Promise<AutomationTask> {
+    const task = this.createTask(type, description, input);
+    await this.taskRuns.get(task.id);
+    return task;
+  }
 
-    // No task executor is implemented. Report the task honestly as not
-    // executed instead of fabricating a result.
-    task.status = "failed";
-    task.completedAt = new Date();
-    task.output = {
-      error: `Task not executed: no executor is available for task type "${task.type}".`,
-    };
+  /**
+   * Process an automation task. Text tasks the model can actually perform
+   * (summarize, analyze, create) run through a prompt template and the
+   * model's real output is the result. Tasks that need an executor this
+   * service does not have (memory store, scheduler) are reported as not
+   * executed.
+   */
+  private processTask(taskId: string): Promise<void> {
+    const task = this.tasks.get(taskId);
+    if (!task) return Promise.resolve();
+
+    const template = TASK_TEMPLATES[task.type];
+    if (!template) {
+      task.status = "failed";
+      task.completedAt = new Date();
+      task.output = {
+        error: `Task not executed: no executor is available for task type "${task.type}".`,
+      };
+      return Promise.resolve();
+    }
+
+    task.status = "processing";
+    const run = (async () => {
+      try {
+        const result = await this.generateTaskOutput(
+          template({
+            character: this.getActiveCharacterProfile().name,
+            description: task.description,
+            input: formatTaskInput(task.input),
+          })
+        );
+        task.status = "completed";
+        task.output = { result };
+      } catch (error) {
+        task.status = "failed";
+        task.output = {
+          error: `Task failed: ${error instanceof Error ? error.message : String(error)}`,
+        };
+      } finally {
+        task.completedAt = new Date();
+        this.taskRuns.delete(taskId);
+      }
+    })();
+    this.taskRuns.set(taskId, run);
+    return run;
+  }
+
+  /**
+   * One stand-alone model call for a task (the conversation is not sent).
+   */
+  private async generateTaskOutput(prompt: string): Promise<string> {
+    const character = this.getActiveCharacterProfile();
+    if (!this.aiAdapter) {
+      this.aiAdapter = getDefaultAdapter();
+    }
+    const response = await this.aiAdapter.generate(
+      [
+        {
+          role: "system",
+          content: this.inferenceConfig.systemPrompt || character.systemPrompt,
+        },
+        { role: "user", content: prompt },
+      ],
+      this.inferenceConfig
+    );
+    if (!response.content || !response.content.trim()) {
+      throw new Error("The model returned an empty response");
+    }
+    return response.content.trim();
   }
 
   /**
@@ -310,7 +461,7 @@ export class EchoLaylaService {
    * Save settings to localStorage
    */
   private saveSettings(): void {
-    if (typeof window === "undefined") return;
+    if (typeof localStorage === "undefined") return;
 
     const settings = {
       activeCharacter: this.activeCharacter,
@@ -325,7 +476,7 @@ export class EchoLaylaService {
    * Load settings from localStorage
    */
   private loadSettings(): void {
-    if (typeof window === "undefined") return;
+    if (typeof localStorage === "undefined") return;
 
     const saved = localStorage.getItem("echolayla:settings");
     if (!saved) return;
