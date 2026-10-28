@@ -16,6 +16,13 @@ import {
 } from "../types/ToroidalCognitive";
 import { supabase as _supabase } from "../services/supabaseClient";
 import { useOrchestrator } from "../contexts/OrchestratorContext";
+import {
+  describeModelError,
+  onModelChange,
+  readModelSettings,
+  resolveModel,
+  saveModelSettings,
+} from "../services/modelProvider";
 
 interface Message {
   id: string;
@@ -35,7 +42,11 @@ const ToroidalChat = () => {
   );
 
   // Toroidal-specific settings
+  // Shared model settings (optional: a locally served model is used otherwise)
   const [apiKey, setApiKey] = useState("");
+  const [baseURL, setBaseURL] = useState("");
+  const [modelName, setModelName] = useState("");
+  const [modelStatus, setModelStatus] = useState("Checking for a model...");
   const [temperature, setTemperature] = useState(0.7);
   const [creativityLevel, setCreativityLevel] = useState<
     "balanced" | "analytical" | "creative" | "philosophical"
@@ -46,14 +57,14 @@ const ToroidalChat = () => {
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
-  const { addMemory } = useMemory();
+  const { addMemory, memories } = useMemory();
+  const introRequested = useRef(false);
   const orchestrator = useOrchestrator();
 
   const {
     generateDialogue,
     generateFormattedResponse: _generateFormattedResponse,
-    hasApiKey,
-    setApiKey: setToroidalApiKey,
+    generateIntroduction,
   } = useToroidalCognitive();
 
   // Auto-scroll to bottom when messages change
@@ -66,14 +77,72 @@ const ToroidalChat = () => {
     }
   }, [messages]);
 
-  // Check for API key in localStorage
+  // Load saved model settings
   useEffect(() => {
-    const storedApiKey = localStorage.getItem("openai_api_key");
-    if (storedApiKey) {
-      setApiKey(storedApiKey);
-      setToroidalApiKey(storedApiKey);
-    }
-  }, [setToroidalApiKey]);
+    const settings = readModelSettings();
+    setApiKey(settings.apiKey || "");
+    setBaseURL(settings.baseURL || "");
+    setModelName(settings.model || "");
+  }, []);
+
+  const refreshModelStatus = () => {
+    resolveModel().then(
+      endpoint =>
+        setModelStatus(
+          `Using ${endpoint.label} (${endpoint.source === "local" ? "verified local model" : "configured"})`
+        ),
+      error => setModelStatus(describeModelError(error))
+    );
+  };
+  useEffect(() => {
+    refreshModelStatus();
+    return onModelChange(endpoint => {
+      if (endpoint) refreshModelStatus();
+    });
+  }, []);
+
+  const addSystemMessage = (content: string) => {
+    setMessages(prev => [
+      ...prev,
+      {
+        id: `msg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}_system`,
+        sender: "system",
+        content,
+        timestamp: new Date().toISOString(),
+      },
+    ]);
+  };
+
+  // Opening introduction: Echo's and Marduk's greetings and the joint welcome
+  // are written by the model from the greeting prompt templates; without a
+  // model an honest system notice is shown instead
+  useEffect(() => {
+    if (introRequested.current) return;
+    introRequested.current = true;
+    setIsProcessing(true);
+    resolveModel()
+      .then(() =>
+        generateIntroduction({
+          creativityLevel,
+          storedMemoryCount: memories.length,
+        })
+      )
+      .then(dialogue => {
+        setMessages(prev => [
+          ...prev,
+          {
+            id: `msg_${Date.now()}_intro`,
+            sender: "toroidal",
+            content: generateFormattedResponseFromDialogue(dialogue),
+            timestamp: new Date().toISOString(),
+            dialogue,
+          },
+        ]);
+      })
+      .catch(error => addSystemMessage(describeModelError(error)))
+      .finally(() => setIsProcessing(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleSendMessage = async () => {
     if (input.trim() === "" || isProcessing) return;
@@ -89,29 +158,10 @@ const ToroidalChat = () => {
     setInput("");
     setIsProcessing(true);
 
-    const addSystemMessage = (content: string) => {
-      setMessages(prev => [
-        ...prev,
-        {
-          id: `msg_${Date.now()}_system`,
-          sender: "system",
-          content,
-          timestamp: new Date().toISOString(),
-        },
-      ]);
-    };
-
     try {
       // Terminal commands are tool calls: their output is a system message
       if (isTerminalCommand(input)) {
         addSystemMessage(await handleTerminalCommand(input));
-        return;
-      }
-
-      if (!hasApiKey) {
-        addSystemMessage(
-          "No language model is configured, so Deep Tree Echo and Marduk cannot reply. Add your OpenAI API key in the settings."
-        );
         return;
       }
 
@@ -145,9 +195,7 @@ const ToroidalChat = () => {
       });
     } catch (error) {
       console.error("Error generating toroidal response:", error);
-      addSystemMessage(
-        `Model request failed: ${error instanceof Error ? error.message : "Unknown error"}. Check your API key configuration or try again later.`
-      );
+      addSystemMessage(describeModelError(error));
     } finally {
       setIsProcessing(false);
     }
@@ -208,12 +256,16 @@ const ToroidalChat = () => {
     }
   };
 
-  const handleApiKeySave = () => {
-    if (apiKey.trim()) {
-      setToroidalApiKey(apiKey.trim());
-      localStorage.setItem("openai_api_key", apiKey.trim());
-      setShowSettings(false);
-    }
+  const handleModelSettingsSave = () => {
+    // Empty fields clear the setting; with nothing set a locally served
+    // model is auto-discovered
+    saveModelSettings({
+      apiKey: apiKey.trim(),
+      baseURL: baseURL.trim(),
+      model: modelName.trim(),
+    });
+    setModelStatus("Checking for a model...");
+    refreshModelStatus();
   };
 
   const toggleMessageExpansion = (messageId: string) => {
@@ -267,31 +319,64 @@ const ToroidalChat = () => {
           </h3>
           <div className="space-y-4">
             <div>
+              <h4 className="text-sm font-medium mb-1">Language Model</h4>
+              <p className="text-xs opacity-70 mb-2">
+                Shared with the Deep Tree Echo chat. All fields are optional:
+                with none set, a locally served model is used if one is found
+                (Ollama on :11434 — allow this origin with OLLAMA_ORIGINS — an
+                OpenAI-compatible server on :8080/:1234/:8000/:5000, or the
+                NanEcho server).
+              </p>
               <label
                 htmlFor="openai-api-key"
                 className="block text-sm font-medium mb-1"
               >
-                OpenAI API Key
+                API Key
               </label>
               <input
                 id="openai-api-key"
                 type="password"
                 value={apiKey}
                 onChange={e => setApiKey(e.target.value)}
-                placeholder="Enter OpenAI API key"
+                placeholder="OpenAI (or compatible provider) API key"
                 className="w-full bg-input border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary"
               />
-              <p className="text-xs opacity-70 mt-1">
-                {hasApiKey
-                  ? "API key is configured for toroidal processing"
-                  : "Enter your OpenAI API key to access dual persona AI capabilities"}
+              <label
+                htmlFor="model-base-url"
+                className="block text-sm font-medium mt-2 mb-1"
+              >
+                Base URL
+              </label>
+              <input
+                id="model-base-url"
+                type="text"
+                value={baseURL}
+                onChange={e => setBaseURL(e.target.value)}
+                placeholder="e.g. http://127.0.0.1:11434/v1"
+                className="w-full bg-input border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary"
+              />
+              <label
+                htmlFor="model-name"
+                className="block text-sm font-medium mt-2 mb-1"
+              >
+                Model
+              </label>
+              <input
+                id="model-name"
+                type="text"
+                value={modelName}
+                onChange={e => setModelName(e.target.value)}
+                placeholder="e.g. llama3.2 (default: first served model)"
+                className="w-full bg-input border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary"
+              />
+              <p className="text-xs opacity-70 mt-1 whitespace-pre-wrap">
+                {modelStatus}
               </p>
               <button
-                onClick={handleApiKeySave}
-                className="mt-2 bg-primary text-white px-3 py-1 rounded-md disabled:opacity-50"
-                disabled={!apiKey.trim()}
+                onClick={handleModelSettingsSave}
+                className="mt-2 bg-primary text-white px-3 py-1 rounded-md"
               >
-                Save API Key
+                Save Model Settings
               </button>
             </div>
 
@@ -413,8 +498,8 @@ const ToroidalChat = () => {
           {messages.length === 0 && (
             <div className="text-sm opacity-60 text-center mt-8">
               No messages yet. Each query is answered by Deep Tree Echo and
-              Marduk via the language model (requires an OpenAI API key in
-              settings).
+              Marduk via the language model (configured in settings, or a
+              locally served model).
             </div>
           )}
           {messages.map(message => (

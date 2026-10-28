@@ -1,4 +1,11 @@
-import { OpenAI } from "openai";
+import {
+  chatComplete,
+  getOpenAIClient,
+  isModelKnownAvailable,
+  parseModelJson,
+  resolveModel,
+  setModelOverrides,
+} from "./modelProvider";
 import { HfInference } from "@huggingface/inference";
 import { createClient } from "@supabase/supabase-js";
 import { getMemoryService } from "../../app/services/memory.server";
@@ -25,7 +32,6 @@ export interface AIResponse {
 
 export class AIService {
   private static instance: AIService;
-  private openai: OpenAI | null = null;
   private hf: HfInference | null = null;
   private llama: unknown | null = null;
   private supabase: ReturnType<typeof createClient> | null = null;
@@ -43,10 +49,9 @@ export class AIService {
 
   public initialize(config: AIServiceConfig): void {
     if (config.openaiApiKey) {
-      this.openai = new OpenAI({
-        apiKey: config.openaiApiKey,
-        dangerouslyAllowBrowser: true,
-      });
+      // Shared resolver: explicit key, configured base URL or a verified
+      // locally served model
+      setModelOverrides({ apiKey: config.openaiApiKey });
     }
 
     if (config.huggingfaceApiKey) {
@@ -61,15 +66,12 @@ export class AIService {
       this.userId = config.userId;
     }
 
-    // Initialize LlamaIndex with OpenAI if available
-    if (this.openai) {
-      // Note: LlamaIndex usage to be implemented when needed
-      this.llama = null;
-    }
+    // LlamaIndex is not wired up; the "llama" provider reports that honestly
+    this.llama = null;
   }
 
   public isInitialized(): boolean {
-    return !!this.openai || !!this.hf;
+    return isModelKnownAvailable() || !!this.hf;
   }
 
   public async generateResponse(
@@ -82,7 +84,7 @@ export class AIService {
       provider?: "openai" | "huggingface" | "llama";
     } = {}
   ): Promise<AIResponse> {
-    const { model = "gpt-4-turbo", provider = "openai" } = options;
+    const { model, provider = "openai" } = options;
 
     // Get relevant memories if requested
     let contextMemories: string[] = [];
@@ -103,21 +105,20 @@ export class AIService {
     try {
       switch (provider) {
         case "openai": {
-          if (!this.openai) throw new Error("OpenAI not initialized");
-          const completion = await this.openai.chat.completions.create({
-            model,
-            messages: [{ role: "user", content: contextPrompt }],
-            temperature: options.temperature ?? 0.7,
-            max_tokens: options.maxTokens,
-          });
-          const text = completion.choices[0]?.message?.content;
-          if (!text) {
-            throw new Error("The model returned an empty response.");
-          }
+          // Configured API or verified local model (OpenAI-compatible)
+          const text = await chatComplete(
+            [{ role: "user", content: contextPrompt }],
+            {
+              model,
+              temperature: options.temperature ?? 0.7,
+              maxTokens: options.maxTokens,
+            }
+          );
+          const endpoint = await resolveModel();
           return {
             text,
-            source: "openai",
-            metadata: { model },
+            source: endpoint.source === "local" ? "local" : "openai",
+            metadata: { model: endpoint.model, endpoint: endpoint.label },
           };
         }
 
@@ -160,17 +161,21 @@ export class AIService {
   }
 
   public async generateEmbedding(text: string): Promise<number[]> {
-    if (!this.openai) {
-      throw new Error("OpenAI not initialized");
+    const endpoint = await resolveModel();
+    if (endpoint.kind !== "openai") {
+      throw new Error(
+        `Embeddings are not supported by the resolved model server (${endpoint.label})`
+      );
     }
+    const client = getOpenAIClient(endpoint);
+    const hosted = endpoint.baseURL === "https://api.openai.com/v1";
 
     try {
-      const response = await this.openai.embeddings.create({
-        model: "text-embedding-3-large",
-        input: text,
-        dimensions: 1536,
-      });
-
+      const response = await client.embeddings.create(
+        hosted
+          ? { model: "text-embedding-3-large", input: text, dimensions: 1536 }
+          : { model: endpoint.model, input: text }
+      );
       return response.data[0].embedding;
     } catch (error) {
       console.error("Error generating embedding:", error);
@@ -183,8 +188,8 @@ export class AIService {
     patterns: string[];
     recommendations: string[];
   }> {
-    if (!this.openai || !this.userId) {
-      throw new Error("OpenAI or user not initialized");
+    if (!this.userId) {
+      throw new Error("User not initialized");
     }
 
     try {
@@ -196,29 +201,29 @@ export class AIService {
         )
         .join("\n\n");
 
-      const response = await this.openai.chat.completions.create({
-        model: "gpt-4-turbo",
-        messages: [
+      const raw = await chatComplete(
+        [
           {
             role: "system",
             content:
-              "Analyze the provided memories and extract insights, patterns, and recommendations. Format your response as JSON with three arrays: insights, patterns, and recommendations.",
+              "Analyze the provided memories and extract insights, patterns, and recommendations. Reply with ONLY a JSON object with three string arrays: insights, patterns, and recommendations.",
           },
-          {
-            role: "user",
-            content: memoryText,
-          },
+          { role: "user", content: memoryText },
         ],
-        response_format: { type: "json_object" },
-      });
-
-      const analysis = JSON.parse(
-        response.choices[0]?.message?.content || "{}"
+        { temperature: 0.3 }
       );
+
+      const analysis = parseModelJson<{
+        insights?: unknown;
+        patterns?: unknown;
+        recommendations?: unknown;
+      }>(raw);
+      const strings = (value: unknown): string[] =>
+        Array.isArray(value) ? value.map(String) : [];
       return {
-        insights: analysis.insights || [],
-        patterns: analysis.patterns || [],
-        recommendations: analysis.recommendations || [],
+        insights: strings(analysis.insights),
+        patterns: strings(analysis.patterns),
+        recommendations: strings(analysis.recommendations),
       };
     } catch (error) {
       console.error("Error analyzing memories:", error);

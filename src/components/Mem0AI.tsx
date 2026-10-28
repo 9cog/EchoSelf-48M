@@ -105,12 +105,13 @@ const Mem0AI = () => {
           setIsAuthenticated(true);
           setUserId(data.session.user.id);
 
-          // Try to initialize Mem0AI with stored API key
+          // Open the user's memory store; a stored API key is optional
+          // (the model may also be a verified locally served one)
           const storedApiKey = localStorage.getItem("openai_api_key");
           if (storedApiKey) {
             setApiKey(storedApiKey);
-            mem0ai.initialize(storedApiKey, data.session.user.id);
           }
+          mem0ai.initialize(storedApiKey || undefined, data.session.user.id);
         }
       } catch (error) {
         console.error("Error checking session:", error);
@@ -207,7 +208,7 @@ const Mem0AI = () => {
 
   const handleCreateMemory = async () => {
     if (!mem0ai.isInitialized()) {
-      setStatusMessage("Please set your OpenAI API key first");
+      setStatusMessage("Sign in first to open your memory store");
       setShowSettings(true);
       return;
     }
@@ -336,7 +337,7 @@ const Mem0AI = () => {
 
   const handleGenerateSummary = async () => {
     if (!mem0ai.isInitialized()) {
-      setStatusMessage("Please set your OpenAI API key first");
+      setStatusMessage("Sign in first to open your memory store");
       setShowSettings(true);
       return;
     }
@@ -477,8 +478,8 @@ const Mem0AI = () => {
                   </button>
                 </div>
                 <p className="text-xs mt-1 opacity-70">
-                  Your API key is required for embedding generation and memory
-                  search.
+                  Optional: memory summaries use this key, the base URL/model
+                  set in Chat settings, or a locally served model.
                 </p>
               </div>
 
@@ -893,7 +894,7 @@ const Mem0AI = () => {
             ) : !mem0ai.isInitialized() ? (
               <div className="p-4 text-center">
                 <div className="opacity-70">
-                  Please configure your OpenAI API key to use Mem0AI
+                  Sign in to open your Mem0AI memory store
                 </div>
                 <button
                   onClick={() => setShowSettings(true)}

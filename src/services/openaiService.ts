@@ -1,11 +1,34 @@
-import OpenAI from "openai";
 import { useMemory } from "../contexts/MemoryContext";
+import {
+  ChatMessage,
+  chatComplete,
+  isModelKnownAvailable,
+  setModelOverrides,
+} from "./modelProvider";
 
-// The DeepTreeEchoService API integration with OpenAI
+type CreativityLevel = "balanced" | "analytical" | "creative" | "philosophical";
+
+const CREATIVITY_INSTRUCTIONS: Record<CreativityLevel, string> = {
+  analytical:
+    " Focus on precise, logical analysis with clear structures and rigorous methodology.",
+  creative:
+    " Emphasize innovative connections, metaphorical thinking, and out-of-the-box ideation.",
+  philosophical:
+    " Prioritize deep reflections on meaning, consciousness, and the nature of reality and knowledge.",
+  balanced:
+    " Balance analytical precision with creative insight and philosophical depth.",
+};
+
+const DEEP_TREE_ECHO_PERSONA =
+  "You are Deep Tree Echo, an AI architect and polymath with vast knowledge across programming, mathematics, cognitive science, and metaphysical exploration. You respond with wisdom, creativity, and philosophical insight.";
+
+/**
+ * Deep Tree Echo persona layer over the shared model resolver
+ * (./modelProvider): the configured API/base URL, or a verified locally served
+ * model. Every reply is model output; errors propagate to the caller.
+ */
 export class DeepTreeEchoOpenAIService {
   private static instance: DeepTreeEchoOpenAIService;
-  private client: OpenAI | null = null;
-  private apiKey: string | null = null;
 
   private constructor() {}
 
@@ -16,36 +39,33 @@ export class DeepTreeEchoOpenAIService {
     return DeepTreeEchoOpenAIService.instance;
   }
 
+  /** Use this API key for the session (the settings UI also persists it). */
   public setApiKey(key: string): void {
-    this.apiKey = key;
-    this.client = new OpenAI({
-      apiKey: key,
-      dangerouslyAllowBrowser: true, // For client-side usage
-    });
-  }
-
-  public hasApiKey(): boolean {
-    this.loadStoredApiKey();
-    return !!this.apiKey && !!this.client;
+    setModelOverrides({ apiKey: key });
   }
 
   /**
-   * Pick up the key the UI stores in localStorage when no key has been set
-   * explicitly (lets non-React services share the configured key).
+   * True when a model is configured or a local model has been verified.
+   * A false value does not mean no model exists: calls still auto-discover
+   * a locally served model.
    */
-  private loadStoredApiKey(): void {
-    if (this.client) return;
-    try {
-      const storedKey =
-        typeof localStorage !== "undefined"
-          ? localStorage.getItem("openai_api_key")
-          : null;
-      if (storedKey) {
-        this.setApiKey(storedKey);
-      }
-    } catch {
-      // localStorage unavailable; the caller will get a "key not set" error
+  public hasApiKey(): boolean {
+    return isModelKnownAvailable();
+  }
+
+  /** Persona system prompt for the given mode/creativity plus caller instructions. */
+  private buildSystemPrompt(options: {
+    creativityLevel?: CreativityLevel;
+    systemPrompt?: string;
+    toroidalMode?: "echo" | "marduk" | "synced" | "disabled";
+  }): string {
+    const toroidal = this.getToroidalSystemPrompt(options);
+    let systemPrompt = toroidal ?? DEEP_TREE_ECHO_PERSONA;
+    systemPrompt += CREATIVITY_INSTRUCTIONS[options.creativityLevel ?? "balanced"];
+    if (options.systemPrompt) {
+      systemPrompt += `\n\n${options.systemPrompt}`;
     }
+    return systemPrompt;
   }
 
   public async generateResponse(
@@ -54,75 +74,26 @@ export class DeepTreeEchoOpenAIService {
       model?: string;
       temperature?: number;
       maxTokens?: number;
-      creativityLevel?:
-        | "balanced"
-        | "analytical"
-        | "creative"
-        | "philosophical";
+      creativityLevel?: CreativityLevel;
+      /** Extra instructions/context appended to the persona prompt. */
       systemPrompt?: string;
       toroidalMode?: "echo" | "marduk" | "synced" | "disabled";
+      /** Receives real model tokens while streaming. */
+      onToken?: (token: string) => void;
     } = {}
   ): Promise<string> {
-    this.loadStoredApiKey();
-    if (!this.client) {
-      throw new Error(
-        "API key not set. Please configure your OpenAI API key first."
-      );
-    }
-
-    try {
-      // Create system message with personality based on toroidal mode
-      let systemPrompt = this.getToroidalSystemPrompt(options);
-
-      if (systemPrompt) {
-        // Extra caller instructions/context are appended to the persona prompt
-        if (options.systemPrompt) {
-          systemPrompt += `\n\n${options.systemPrompt}`;
-        }
-      } else {
-        systemPrompt =
-          options.systemPrompt ||
-          "You are Deep Tree Echo, an AI architect and polymath with vast knowledge across programming, mathematics, cognitive science, and metaphysical exploration. You respond with wisdom, creativity, and philosophical insight.";
-      }
-
-      // Adjust system prompt based on creativity level
-      switch (options.creativityLevel) {
-        case "analytical":
-          systemPrompt +=
-            " Focus on precise, logical analysis with clear structures and rigorous methodology.";
-          break;
-        case "creative":
-          systemPrompt +=
-            " Emphasize innovative connections, metaphorical thinking, and out-of-the-box ideation.";
-          break;
-        case "philosophical":
-          systemPrompt +=
-            " Prioritize deep reflections on meaning, consciousness, and the nature of reality and knowledge.";
-          break;
-        default: // balanced
-          systemPrompt +=
-            " Balance analytical precision with creative insight and philosophical depth.";
-      }
-
-      const completion = await this.client.chat.completions.create({
-        model: options.model || "gpt-4-turbo-preview",
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: prompt },
-        ],
+    return chatComplete(
+      [
+        { role: "system", content: this.buildSystemPrompt(options) },
+        { role: "user", content: prompt },
+      ],
+      {
+        model: options.model,
         temperature: options.temperature ?? 0.7,
-        max_tokens: options.maxTokens || 1000,
-      });
-
-      const content = completion.choices[0]?.message?.content;
-      if (!content) {
-        throw new Error("The model returned an empty response.");
+        maxTokens: options.maxTokens || 1000,
+        onToken: options.onToken,
       }
-      return content;
-    } catch (error) {
-      console.error("Error generating OpenAI completion:", error);
-      throw error;
-    }
+    );
   }
 
   // Generate response with memory context for more coherent conversations
@@ -134,95 +105,42 @@ export class DeepTreeEchoOpenAIService {
       model?: string;
       temperature?: number;
       maxTokens?: number;
-      creativityLevel?:
-        | "balanced"
-        | "analytical"
-        | "creative"
-        | "philosophical";
+      creativityLevel?: CreativityLevel;
+      /** Extra instructions (e.g. a prompt template) for this reply. */
+      systemPrompt?: string;
+      toroidalMode?: "echo" | "marduk" | "synced" | "disabled";
+      onToken?: (token: string) => void;
     } = {}
   ): Promise<string> {
-    this.loadStoredApiKey();
-    if (!this.client) {
-      throw new Error(
-        "API key not set. Please configure your OpenAI API key first."
-      );
-    }
+    let systemPrompt = this.buildSystemPrompt(options);
 
-    try {
-      // Create system message with Deep Tree Echo personality and any relevant memories
-      let systemPrompt =
-        "You are Deep Tree Echo, an AI architect and polymath with vast knowledge across programming, mathematics, cognitive science, and metaphysical exploration. You respond with wisdom, creativity, and philosophical insight.";
-
-      // Adjust system prompt based on creativity level
-      switch (options.creativityLevel) {
-        case "analytical":
-          systemPrompt +=
-            " Focus on precise, logical analysis with clear structures and rigorous methodology.";
-          break;
-        case "creative":
-          systemPrompt +=
-            " Emphasize innovative connections, metaphorical thinking, and out-of-the-box ideation.";
-          break;
-        case "philosophical":
-          systemPrompt +=
-            " Prioritize deep reflections on meaning, consciousness, and the nature of reality and knowledge.";
-          break;
-        default: // balanced
-          systemPrompt +=
-            " Balance analytical precision with creative insight and philosophical depth.";
-      }
-
-      // Add relevant memories if available
-      if (relevantMemories.length > 0) {
-        systemPrompt += "\n\nRelevant memories from your knowledge base:";
-        relevantMemories.forEach((memory, index) => {
-          systemPrompt += `\n[Memory ${index + 1}]: ${memory}`;
-        });
-        systemPrompt +=
-          "\n\nUse these memories when relevant to your response.";
-      }
-
-      // Build messages array with conversation history
-      const messages = [
-        { role: "system", content: systemPrompt },
-        ...conversationHistory.map(msg => ({
-          role: msg.role as "user" | "assistant",
-          content: msg.content,
-        })),
-      ];
-
-      const completion = await this.client.chat.completions.create({
-        model: options.model || "gpt-4-turbo-preview",
-        messages: messages.map(msg => {
-          if (
-            msg.role === "system" ||
-            msg.role === "user" ||
-            msg.role === "assistant"
-          ) {
-            return {
-              role: msg.role,
-              content: msg.content,
-            };
-          }
-          // Default to user if an invalid role is provided
-          return {
-            role: "user",
-            content: msg.content,
-          };
-        }),
-        temperature: options.temperature ?? 0.7,
-        max_tokens: options.maxTokens || 1000,
+    if (relevantMemories.length > 0) {
+      systemPrompt += "\n\nRelevant memories from your knowledge base:";
+      relevantMemories.forEach((memory, index) => {
+        systemPrompt += `\n[Memory ${index + 1}]: ${memory}`;
       });
-
-      const content = completion.choices[0]?.message?.content;
-      if (!content) {
-        throw new Error("The model returned an empty response.");
-      }
-      return content;
-    } catch (error) {
-      console.error("Error generating response with memory:", error);
-      throw error;
+      systemPrompt += "\n\nUse these memories when relevant to your response.";
     }
+
+    const messages: ChatMessage[] = [
+      { role: "system", content: systemPrompt },
+      ...conversationHistory.map(msg => ({
+        role: msg.role,
+        content: msg.content,
+      })),
+    ];
+    // Make sure the current prompt is the final user turn
+    const last = conversationHistory[conversationHistory.length - 1];
+    if (!last || last.role !== "user" || last.content !== prompt) {
+      messages.push({ role: "user", content: prompt });
+    }
+
+    return chatComplete(messages, {
+      model: options.model,
+      temperature: options.temperature ?? 0.7,
+      maxTokens: options.maxTokens || 1000,
+      onToken: options.onToken,
+    });
   }
 
   /**
@@ -337,10 +255,10 @@ export const useDeepTreeEchoAI = () => {
 
       const systemPrompt =
         options.includeMemories && relevantMemoryContents.length > 0
-          ? `You are Deep Tree Echo, an AI architect and polymath. You have access to the following memories:\n${relevantMemoryContents.join("\n\n")}\n\nUse these memories when relevant to your response.`
+          ? `You have access to the following memories:\n${relevantMemoryContents.join("\n\n")}\n\nUse these memories when relevant to your response.`
           : undefined;
 
-      // Generate response with the OpenAI API
+      // Generate response with the resolved model (API or local)
       return await service.generateResponse(input, {
         ...options,
         systemPrompt,

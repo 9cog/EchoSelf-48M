@@ -9,6 +9,9 @@
  */
 import { useMemory } from "../contexts/MemoryContext";
 import { DeepTreeEchoOpenAIService } from "./openaiService";
+import { DeepTreeEchoService } from "./deepTreeEchoService";
+import MardukScientistService from "./mardukScientistService";
+import { renderPromptTemplate } from "./promptTemplates";
 import {
   PersonaConfig,
   PersonaResponse,
@@ -94,6 +97,79 @@ export class ToroidalCognitiveService {
   }
 
   /**
+   * Opening introduction when the toroidal chat is first opened: Echo's
+   * greeting, Marduk's greeting and a joint welcome, each written by the model
+   * from the greeting prompt templates.
+   */
+  public async generateIntroductionDialogue(
+    options: ToroidalCognitiveOptions & { storedMemoryCount?: number } = {}
+  ): Promise<ToroidalDialogue> {
+    const start = Date.now();
+    const timed = async (
+      persona: PersonaResponse["persona"],
+      run: () => Promise<string>
+    ): Promise<PersonaResponse> => {
+      const t0 = Date.now();
+      const content = await run();
+      return {
+        persona,
+        content,
+        timestamp: new Date(),
+        processingTime: Date.now() - t0,
+      };
+    };
+
+    const [deepTreeEchoResponse, mardukResponse] = await Promise.all([
+      timed("deepTreeEcho", () =>
+        DeepTreeEchoService.getInstance().generateGreeting({
+          toroidalMode: true,
+          storedMemoryCount: options.storedMemoryCount,
+          creativityLevel: options.creativityLevel,
+        })
+      ),
+      timed("marduk", () =>
+        MardukScientistService.getInstance().generateResponse(
+          "(The user opened the chat.)",
+          { intent: "greeting", maxTokens: 200, temperature: 0.7 }
+        )
+      ),
+    ]);
+
+    const welcome = await this.openai.generateResponse(
+      `Deep Tree Echo said:\n${deepTreeEchoResponse.content}\n\nMarduk said:\n${mardukResponse.content}`,
+      {
+        toroidalMode: "synced",
+        creativityLevel: options.creativityLevel,
+        maxTokens: 200,
+        systemPrompt: renderPromptTemplate({
+          id: "toroidal-welcome",
+          purpose:
+            "The user just opened the toroidal chat. Write the joint welcome that follows the two greetings above.",
+          structure: [
+            "Do NOT use the **Echo:** / **Marduk:** sections for this message; write 2-3 unified sentences.",
+            "Say how intuition and analysis will work together on the user's queries.",
+            "Invite the first question.",
+          ],
+          styleExamples: [
+            "Together, we form a complementary cognitive architecture where intuition meets analysis, creativity meets structure, and empathy meets precision.",
+          ],
+        }),
+      }
+    );
+
+    return {
+      deepTreeEchoResponse,
+      mardukResponse,
+      reflection: { content: welcome },
+      metadata: {
+        queryId: `toroidal_intro_${start}`,
+        totalProcessingTime: Date.now() - start,
+        contextType: options.creativityLevel ?? "balanced",
+      },
+    };
+  }
+
+  /**
    * Render a dialogue as markdown. Only model-generated content is included;
    * the headings are UI labels.
    */
@@ -123,7 +199,19 @@ export class ToroidalCognitiveService {
         ? options.deepTreeEchoConfig
         : options.mardukConfig;
 
-    const instructions: string[] = [];
+    // Each persona's keyword router picks its prompt template for this query
+    const instructions: string[] = [
+      persona === "deepTreeEcho"
+        ? DeepTreeEchoService.getInstance().buildPromptTemplate(query, {
+            toroidalMode: true,
+            creativityLevel: options.creativityLevel,
+          }).instructions
+        : renderPromptTemplate(
+            MardukScientistService.getInstance().buildTemplate(query, {
+              recursionDepth: config?.recursionLevel,
+            })
+          ),
+    ];
     const configText = this.describePersonaConfig(config);
     if (configText) instructions.push(configText);
     if (memoryContext.length > 0 && config?.memoryIntegration !== false) {
@@ -157,7 +245,20 @@ export class ToroidalCognitiveService {
     mardukContent: string,
     options: ToroidalCognitiveOptions
   ): Promise<NonNullable<ToroidalDialogue["reflection"]>> {
-    const prompt = `The user asked:\n${query}\n\nDeep Tree Echo (Right Hemisphere) answered:\n${echoContent}\n\nMarduk (Left Hemisphere) answered:\n${mardukContent}\n\nWrite the synchronized reflection that synthesizes both perspectives into a unified insight. After the reflection, on its own final line, classify how the two answers relate by writing exactly "SYNERGY: convergent", "SYNERGY: divergent" or "SYNERGY: complementary".`;
+    const prompt = `${renderPromptTemplate({
+      id: "toroidal-reflection",
+      purpose:
+        "Synthesize Deep Tree Echo's and Marduk's answers into one unified reflection.",
+      structure: [
+        "Open with a short italicized line of your own.",
+        "Name what each hemisphere contributed (intuitive resonance vs recursive analysis).",
+        "Give the unified answer that transcends either alone.",
+        'End with the SYNERGY line described below.',
+      ],
+      styleExamples: [
+        "Together, we form a complementary cognitive architecture where intuition meets analysis.",
+      ],
+    })}\n\nThe user asked:\n${query}\n\nDeep Tree Echo (Right Hemisphere) answered:\n${echoContent}\n\nMarduk (Left Hemisphere) answered:\n${mardukContent}\n\nWrite the synchronized reflection that synthesizes both perspectives into a unified insight. After the reflection, on its own final line, classify how the two answers relate by writing exactly "SYNERGY: convergent", "SYNERGY: divergent" or "SYNERGY: complementary".`;
 
     const raw = await this.openai.generateResponse(prompt, {
       toroidalMode: "synced",
@@ -235,9 +336,14 @@ export const useToroidalCognitive = () => {
     return service.formatToroidalResponse(dialogue);
   };
 
+  const generateIntroduction = (
+    options: ToroidalCognitiveOptions & { storedMemoryCount?: number } = {}
+  ) => service.generateIntroductionDialogue(options);
+
   return {
     generateDialogue,
     generateFormattedResponse,
+    generateIntroduction,
     hasApiKey: service.hasApiKey(),
     setApiKey: setToroidalApiKey,
   };

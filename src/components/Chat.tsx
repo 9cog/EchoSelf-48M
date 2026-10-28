@@ -8,8 +8,14 @@ import {
 } from "react-icons/fi";
 import ReactMarkdown from "react-markdown";
 import { useMemory } from "../contexts/MemoryContext";
-import { useLLM } from "../services/llmService";
-import { useDeepTreeEchoAI } from "../services/openaiService";
+import { useDeepTreeEcho } from "../services/deepTreeEchoService";
+import {
+  describeModelError,
+  onModelChange,
+  readModelSettings,
+  resolveModel,
+  saveModelSettings,
+} from "../services/modelProvider";
 import { useMem0AI } from "../services/mem0aiService";
 import { supabase } from "../services/supabaseClient";
 import { useOrchestrator } from "../contexts/OrchestratorContext";
@@ -30,21 +36,20 @@ const Chat = () => {
   const [creativityLevel, setCreativityLevel] = useState<
     "balanced" | "analytical" | "creative" | "philosophical"
   >("balanced");
+  // Model settings (persisted by modelProvider; all optional: without them a
+  // locally served model is auto-discovered)
   const [apiKey, setApiKey] = useState("");
+  const [baseURL, setBaseURL] = useState("");
+  const [modelName, setModelName] = useState("");
+  const [modelStatus, setModelStatus] = useState("Checking for a model...");
   const [useMemoryContext, setUseMemoryContext] = useState(true);
   const [useMem0AIContext, setUseMem0AIContext] = useState(true);
-  const [model, setModel] = useState("gpt-4-turbo-preview");
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
-  const { addMemory } = useMemory();
-  const { setApiKey: setLLMApiKey } = useLLM();
-  const {
-    generateResponse,
-    generateResponseWithHistory,
-    hasApiKey: hasOpenAIApiKey,
-    setApiKey: setOpenAIApiKey,
-  } = useDeepTreeEchoAI();
+  const { addMemory, memories } = useMemory();
+  const deepTreeEcho = useDeepTreeEcho();
+  const greetingRequested = useRef(false);
 
   const mem0ai = useMem0AI();
   const orchestrator = useOrchestrator();
@@ -59,25 +64,124 @@ const Chat = () => {
     }
   }, [messages]);
 
-  // Check for API key in localStorage
+  // Load saved model settings and open the user's Mem0AI store
   useEffect(() => {
-    const storedApiKey = localStorage.getItem("openai_api_key");
-    if (storedApiKey) {
-      setApiKey(storedApiKey);
-      setLLMApiKey(storedApiKey);
-      setOpenAIApiKey(storedApiKey);
+    const settings = readModelSettings();
+    setApiKey(settings.apiKey || "");
+    setBaseURL(settings.baseURL || "");
+    setModelName(settings.model || "");
 
-      // Check if Mem0AI needs initialization
-      const checkSession = async () => {
-        const { data } = await supabase.auth.getSession();
-        if (data.session) {
-          mem0ai.initialize(storedApiKey, data.session.user.id);
+    const checkSession = async () => {
+      const { data } = await supabase.auth.getSession();
+      if (data.session) {
+        mem0ai.initialize(settings.apiKey, data.session.user.id);
+      }
+    };
+    checkSession();
+  }, [mem0ai]);
+
+  // Keep the model status line current
+  const refreshModelStatus = () => {
+    resolveModel().then(
+      endpoint =>
+        setModelStatus(
+          `Using ${endpoint.label} (${endpoint.source === "local" ? "verified local model" : "configured"})`
+        ),
+      error => setModelStatus(describeModelError(error))
+    );
+  };
+  useEffect(() => {
+    refreshModelStatus();
+    return onModelChange(endpoint => {
+      if (endpoint) refreshModelStatus();
+    });
+  }, []);
+
+  const addSystemMessage = (content: string) => {
+    setMessages(prev => [
+      ...prev,
+      {
+        id: `msg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}_system`,
+        sender: "system",
+        content,
+        timestamp: new Date().toISOString(),
+      },
+    ]);
+  };
+
+  /**
+   * Run a model call whose tokens stream into a new Echo message. The message
+   * is removed again if the call fails, so only model text is ever shown.
+   */
+  const streamEchoMessage = async (
+    run: (onToken: (token: string) => void) => Promise<string>
+  ): Promise<string> => {
+    const id = `msg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    let created = false;
+    const onToken = (token: string) => {
+      setMessages(prev => {
+        if (!created) {
+          created = true;
+          return [
+            ...prev,
+            {
+              id,
+              sender: "echo",
+              content: token,
+              timestamp: new Date().toISOString(),
+            },
+          ];
         }
-      };
-
-      checkSession();
+        return prev.map(m =>
+          m.id === id ? { ...m, content: m.content + token } : m
+        );
+      });
+    };
+    try {
+      const text = await run(onToken);
+      // Final text is authoritative (also covers non-streaming servers)
+      setMessages(prev =>
+        prev.some(m => m.id === id)
+          ? prev.map(m => (m.id === id ? { ...m, content: text } : m))
+          : [
+              ...prev,
+              {
+                id,
+                sender: "echo",
+                content: text,
+                timestamp: new Date().toISOString(),
+              },
+            ]
+      );
+      created = true;
+      return text;
+    } catch (error) {
+      setMessages(prev => prev.filter(m => m.id !== id));
+      throw error;
     }
-  }, [mem0ai, setLLMApiKey, setOpenAIApiKey]);
+  };
+
+  // Opening greeting: written by the model from the greeting prompt
+  // template, or an honest system notice when no model is available
+  useEffect(() => {
+    if (greetingRequested.current) return;
+    greetingRequested.current = true;
+    setIsProcessing(true);
+    resolveModel()
+      .then(endpoint =>
+        streamEchoMessage(onToken =>
+          deepTreeEcho.generateGreeting({
+            storedMemoryCount: memories.length,
+            modelLabel: endpoint.label,
+            creativityLevel,
+            onToken,
+          })
+        )
+      )
+      .catch(error => addSystemMessage(describeModelError(error)))
+      .finally(() => setIsProcessing(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleSendMessage = async () => {
     if (input.trim() === "" || isProcessing) return;
@@ -93,18 +197,6 @@ const Chat = () => {
     setInput("");
     setIsProcessing(true);
 
-    const addSystemMessage = (content: string) => {
-      setMessages(prev => [
-        ...prev,
-        {
-          id: `msg_${Date.now()}_system`,
-          sender: "system",
-          content,
-          timestamp: new Date().toISOString(),
-        },
-      ]);
-    };
-
     try {
       // Terminal commands are tool calls: their output is shown as a system
       // message, never voiced by Echo
@@ -114,12 +206,6 @@ const Chat = () => {
       }
 
       const useMem0 = mem0ai.isInitialized() && useMem0AIContext;
-      if (!useMem0 && !hasOpenAIApiKey) {
-        addSystemMessage(
-          "No language model is configured, so Deep Tree Echo cannot reply. Add your OpenAI API key in the chat settings."
-        );
-        return;
-      }
 
       // Conversation history for the model (system notices are not part of it)
       const conversationHistory = messages
@@ -135,48 +221,40 @@ const Chat = () => {
         content: userMessage.content,
       });
 
-      let responseContent: string;
-      if (useMem0) {
-        // Model response with Mem0AI memory context
-        responseContent = await mem0ai.generateResponseWithMemoryContext(
-          userMessage.content,
-          conversationHistory,
-          {
-            model,
-            temperature,
-            creativityLevel,
-          }
-        );
-      } else if (useMemoryContext) {
-        // Model response with conversation history and stored memories
-        responseContent = await generateResponseWithHistory(
-          userMessage.content,
-          conversationHistory,
-          {
-            temperature,
-            creativityLevel,
-            model,
-            includeMemories: true,
-          }
-        );
-      } else {
-        // Direct model response without context
-        responseContent = await generateResponse(userMessage.content, {
-          temperature,
-          creativityLevel,
-          model,
-          includeMemories: false,
-        });
-      }
+      // Intent routing picks the prompt template (greeting / identity / help
+      // / default); the model writes the reply from it
+      const { instructions } = deepTreeEcho.buildPromptTemplate(
+        userMessage.content,
+        { creativityLevel }
+      );
 
-      const echoResponse: Message = {
-        id: `msg_${Date.now() + 1}`,
-        sender: "echo",
-        content: responseContent,
-        timestamp: new Date().toISOString(),
-      };
+      const responseContent = await streamEchoMessage(onToken =>
+        useMem0
+          ? // Model response with Mem0AI memory context
+            mem0ai.generateResponseWithMemoryContext(
+              userMessage.content,
+              conversationHistory,
+              {
+                temperature,
+                creativityLevel,
+                systemPrompt: instructions,
+                onToken,
+              }
+            )
+          : // Model response, with conversation history and stored
+            // memories when enabled
+            deepTreeEcho.generateResponse(userMessage.content, {
+              temperature,
+              creativityLevel,
+              includeMemories: useMemoryContext,
+              conversationHistory: useMemoryContext
+                ? conversationHistory
+                : undefined,
+              onToken,
+            })
+      );
 
-      setMessages(prev => [...prev, echoResponse]);
+      const echoResponse = { content: responseContent };
 
       // Store important exchanges in memory
       addMemory({
@@ -201,9 +279,7 @@ const Chat = () => {
       }
     } catch (error) {
       console.error("Error generating response:", error);
-      addSystemMessage(
-        `Model request failed: ${error instanceof Error ? error.message : "Unknown error"}. Check your API key configuration or try again later.`
-      );
+      addSystemMessage(describeModelError(error));
     } finally {
       setIsProcessing(false);
     }
@@ -248,23 +324,24 @@ const Chat = () => {
     }
   };
 
-  const handleApiKeySave = () => {
-    if (apiKey.trim()) {
-      setLLMApiKey(apiKey.trim());
-      setOpenAIApiKey(apiKey.trim());
-      localStorage.setItem("openai_api_key", apiKey.trim());
+  const handleModelSettingsSave = () => {
+    // Empty fields clear the setting; with nothing set a locally served
+    // model is auto-discovered
+    saveModelSettings({
+      apiKey: apiKey.trim(),
+      baseURL: baseURL.trim(),
+      model: modelName.trim(),
+    });
+    setModelStatus("Checking for a model...");
+    refreshModelStatus();
 
-      // Also initialize Mem0AI if user is authenticated
-      const initializeMem0AI = async () => {
-        const { data } = await supabase.auth.getSession();
-        if (data.session) {
-          mem0ai.initialize(apiKey.trim(), data.session.user.id);
-        }
-      };
-
-      initializeMem0AI();
-      setShowSettings(false);
-    }
+    const initializeMem0AI = async () => {
+      const { data } = await supabase.auth.getSession();
+      if (data.session) {
+        mem0ai.initialize(apiKey.trim() || undefined, data.session.user.id);
+      }
+    };
+    initializeMem0AI();
   };
 
   return (
@@ -308,56 +385,64 @@ const Chat = () => {
           <h3 className="text-sm font-semibold mb-3">Chat Settings</h3>
           <div className="space-y-4">
             <div>
+              <h4 className="text-sm font-medium mb-1">Language Model</h4>
+              <p className="text-xs opacity-70 mb-2">
+                All fields are optional. With none set, a locally served model
+                is used if one is found (Ollama on :11434 — allow this origin
+                with OLLAMA_ORIGINS — or an OpenAI-compatible server on
+                :8080/:1234/:8000/:5000, or the NanEcho server).
+              </p>
               <label
                 htmlFor="openai-api-key"
                 className="block text-sm font-medium mb-1"
               >
-                OpenAI API Key
+                API Key
               </label>
               <input
                 id="openai-api-key"
                 type="password"
                 value={apiKey}
                 onChange={e => setApiKey(e.target.value)}
-                placeholder="Enter OpenAI API key"
+                placeholder="OpenAI (or compatible provider) API key"
                 className="w-full bg-input border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary"
               />
-              <p className="text-xs opacity-70 mt-1">
-                {hasOpenAIApiKey
-                  ? "API key is configured"
-                  : "Enter your OpenAI API key to access generative AI capabilities"}
-              </p>
-              <button
-                onClick={handleApiKeySave}
-                className="mt-2 bg-primary text-white px-3 py-1 rounded-md disabled:opacity-50"
-                disabled={!apiKey.trim()}
-              >
-                Save API Key
-              </button>
-            </div>
-
-            <div>
               <label
-                htmlFor="model-select"
-                className="block text-sm font-medium mb-1"
+                htmlFor="model-base-url"
+                className="block text-sm font-medium mt-2 mb-1"
+              >
+                Base URL
+              </label>
+              <input
+                id="model-base-url"
+                type="text"
+                value={baseURL}
+                onChange={e => setBaseURL(e.target.value)}
+                placeholder="e.g. http://127.0.0.1:11434/v1 (default: OpenAI API when a key is set)"
+                className="w-full bg-input border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary"
+              />
+              <label
+                htmlFor="model-name"
+                className="block text-sm font-medium mt-2 mb-1"
               >
                 Model
               </label>
-              <select
-                id="model-select"
-                value={model}
-                onChange={e => setModel(e.target.value)}
+              <input
+                id="model-name"
+                type="text"
+                value={modelName}
+                onChange={e => setModelName(e.target.value)}
+                placeholder="e.g. llama3.2 or gpt-4o-mini (default: first served model)"
                 className="w-full bg-input border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary"
-              >
-                <option value="gpt-4-turbo-preview">
-                  GPT-4 Turbo (Most Capable)
-                </option>
-                <option value="gpt-4">GPT-4</option>
-                <option value="gpt-3.5-turbo">GPT-3.5 Turbo</option>
-              </select>
-              <p className="text-xs opacity-70 mt-1">
-                Select the AI model to use for generating responses
+              />
+              <p className="text-xs opacity-70 mt-1 whitespace-pre-wrap">
+                {modelStatus}
               </p>
+              <button
+                onClick={handleModelSettingsSave}
+                className="mt-2 bg-primary text-white px-3 py-1 rounded-md"
+              >
+                Save Model Settings
+              </button>
             </div>
 
             <div>
@@ -480,7 +565,8 @@ const Chat = () => {
           {messages.length === 0 && (
             <div className="text-sm opacity-60 text-center mt-8">
               No messages yet. Send a message to start a conversation with Deep
-              Tree Echo (requires an OpenAI API key in settings).
+              Tree Echo (needs a configured or locally served model; see
+              settings).
             </div>
           )}
           {messages.map(message => (
