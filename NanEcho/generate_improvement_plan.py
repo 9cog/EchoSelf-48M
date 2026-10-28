@@ -28,12 +28,17 @@ def generate_improvement_plan(analysis_file: str = "automation_analysis.json") -
         with open(analysis_file, 'r') as f:
             analysis = json.load(f)
         
+        if analysis.get('status') == 'not_evaluated' or 'overall_fidelity' not in analysis:
+            print(f'⚠️ Model was not evaluated ({analysis.get("error", "no fidelity metrics")}); '
+                  'no improvement plan generated')
+            return
+        
         recommendations = analysis.get('recommendations', {})
         automation_triggers = analysis.get('automation_triggers', {})
         
         print('🚀 Continuous Improvement Summary:')
         print(f'   Training Mode: {analysis.get("training_mode", "unknown")}')
-        print(f'   Performance: {analysis.get("overall_fidelity", 0):.3f}')
+        print(f'   Performance: {analysis["overall_fidelity"]:.3f}')
         
         if recommendations.get('immediate'):
             print(f'   Immediate Actions: {len(recommendations["immediate"])}')

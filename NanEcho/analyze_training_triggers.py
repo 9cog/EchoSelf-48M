@@ -29,10 +29,16 @@ def analyze_training_triggers(analysis_file: str = "automation_analysis.json",
             with open(analysis_file, 'r') as f:
                 analysis = json.load(f)
             
+            if analysis.get('status') == 'not_evaluated' or 'overall_fidelity' not in analysis:
+                print(f'⚠️ Model was not evaluated ({analysis.get("error", "no fidelity metrics")}); '
+                      'performance-based triggers unavailable')
+                use_fallback_logic(event_name, relentless_training)
+                return
+            
             automation_triggers = analysis.get('automation_triggers', {})
             should_trigger = automation_triggers.get('trigger_next_training', False)
             delay_hours = automation_triggers.get('training_delay_hours', 4)
-            current_fidelity = analysis.get('overall_fidelity', 0)
+            current_fidelity = analysis['overall_fidelity']
             
             if should_trigger:
                 print(f'📊 Automation Analysis: Performance {current_fidelity:.3f}')

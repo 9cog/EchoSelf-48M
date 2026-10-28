@@ -33,7 +33,13 @@ class NanoCogEvaluator:
         Args:
             config: Configuration dictionary for evaluation parameters
         """
-        self.config = config or self._get_default_config()
+        # Merge caller overrides over the defaults so every metric keeps its targets
+        self.config = self._get_default_config()
+        for key, value in (config or {}).items():
+            if isinstance(value, dict) and isinstance(self.config.get(key), dict):
+                self.config[key].update(value)
+            else:
+                self.config[key] = value
         self.evaluation_history = []
         
     def _get_default_config(self) -> Dict[str, Any]:

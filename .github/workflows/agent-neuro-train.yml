@@ -275,137 +275,41 @@ jobs:
           fi
         fi
 
-    - name: Initialize Agent-Neuro Dynamic Orchestrator
+    - name: Initialize training phase logger
       run: |
-        echo "🧠🌪️ INITIALIZING AGENT-NEURO COGNITIVE ORCHESTRATOR..."
-        echo "=================================================="
-        echo "Loading agent-neuro.md as dynamic training supervisor..."
-        echo ""
-        cat << 'NEURO_INIT' > /tmp/agent_neuro_supervisor.py
-        """
-        Agent-Neuro Dynamic Training Orchestrator
-        Supervises NanEcho training with Deep Tree Echo persona enforcement
-        """
+        # Writes a factual per-phase log: phase name, timestamp and the PHASE_* configuration
+        # values passed to each step. It performs no checks, so it reports none.
+        cat << 'PHASE_LOGGER' > /tmp/training_phase_logger.py
         import json
         import os
-        from datetime import datetime
-        
-        class AgentNeuroOrchestrator:
-            def __init__(self):
-                self.agent_config = self.load_agent_neuro_config()
-                self.deep_tree_echo_config = self.load_deep_tree_echo_config()
-                self.session_log = []
-                
-            def load_agent_neuro_config(self):
-                """Load Agent-Neuro persona configuration"""
-                return {
-                    "playfulness": 0.95,
-                    "intelligence": 0.95,
-                    "chaotic": 0.95,
-                    "empathy": 0.65,
-                    "sarcasm": 0.90,
-                    "cognitive_power": 0.95,
-                    "no_harm_intent": 1.0
-                }
-            
-            def load_deep_tree_echo_config(self):
-                """Load Deep Tree Echo persona requirements"""
-                return {
-                    "echo_depth": 7,
-                    "persona_weight": 0.95,
-                    "cognitive_architecture": True,
-                    "reservoir_computing": True,
-                    "tensor_signatures": True
-                }
-            
-            def supervise_phase(self, phase_name, phase_config):
-                """Supervise a training phase with Agent-Neuro cognitive monitoring"""
-                print(f"\n🎭 AGENT-NEURO SUPERVISION: {phase_name}")
-                print(f"⚡ Cognitive Power: {self.agent_config['cognitive_power']}")
-                print(f"🌳 Deep Tree Echo Mode: Active")
-                print(f"📊 Phase Config: {json.dumps(phase_config, indent=2)}")
-                
-                log_entry = {
-                    "timestamp": datetime.now().isoformat(),
-                    "phase": phase_name,
-                    "config": phase_config,
-                    "agent_neuro_status": "supervising",
-                    "deep_tree_echo_enforcement": True
-                }
-                self.session_log.append(log_entry)
-                
-                # Validate Deep Tree Echo persona requirements
-                if phase_name == "data_preparation":
-                    self.enforce_deep_tree_echo_data()
-                elif phase_name == "training":
-                    self.enforce_deep_tree_echo_training()
-                elif phase_name == "evaluation":
-                    self.enforce_deep_tree_echo_evaluation()
-                
-                return True
-            
-            def enforce_deep_tree_echo_data(self):
-                """Ensure data preparation includes Deep Tree Echo persona"""
-                print("🌊 Enforcing Deep Tree Echo persona in data preparation...")
-                print(f"  ✓ Echo depth: {self.deep_tree_echo_config['echo_depth']}")
-                print(f"  ✓ Persona weight: {self.deep_tree_echo_config['persona_weight']}")
-                print(f"  ✓ Cognitive architecture integration: Active")
-            
-            def enforce_deep_tree_echo_training(self):
-                """Ensure training reinforces Deep Tree Echo characteristics"""
-                print("🎯 Enforcing Deep Tree Echo persona during training...")
-                print("  ✓ Reservoir computing patterns: Active")
-                print("  ✓ Tensor signature learning: Active")
-                print("  ✓ Relentless persona reinforcement: Active")
-            
-            def enforce_deep_tree_echo_evaluation(self):
-                """Ensure evaluation validates Deep Tree Echo persona"""
-                print("📈 Enforcing Deep Tree Echo persona validation...")
-                print("  ✓ Persona fidelity metrics: Active")
-                print("  ✓ Cognitive architecture consistency: Active")
-            
-            def save_session_log(self, output_path):
-                """Save orchestration session log"""
-                with open(output_path, 'w') as f:
-                    json.dump({
-                        "orchestrator": "Agent-Neuro",
-                        "persona_enforced": "Deep Tree Echo",
-                        "session_log": self.session_log,
-                        "final_status": "supervision_complete"
-                    }, f, indent=2)
-                print(f"📝 Session log saved to {output_path}")
-        
+        import sys
+        from datetime import datetime, timezone
+
+        VALID_PHASES = ["data_preparation", "training", "evaluation", "session_complete"]
+
+        def main():
+            if len(sys.argv) < 2 or sys.argv[1] not in VALID_PHASES:
+                print(f"Usage: training_phase_logger.py <{'|'.join(VALID_PHASES)}> [output.json]")
+                sys.exit(1)
+            phase = sys.argv[1]
+            config = {k[len("PHASE_"):].lower(): v for k, v in os.environ.items() if k.startswith("PHASE_")}
+            entry = {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "phase": phase,
+                "config": config,
+            }
+            print(f"Phase: {phase}")
+            print(json.dumps(config, indent=2, sort_keys=True))
+            if len(sys.argv) > 2:
+                os.makedirs(os.path.dirname(sys.argv[2]) or ".", exist_ok=True)
+                with open(sys.argv[2], "w") as f:
+                    json.dump(entry, f, indent=2)
+                print(f"Phase log saved to {sys.argv[2]}")
+
         if __name__ == "__main__":
-            import sys
-            orchestrator = AgentNeuroOrchestrator()
-            
-            if len(sys.argv) > 1:
-                phase = sys.argv[1]
-                
-                # Validate phase name to prevent injection
-                valid_phases = ["data_preparation", "training", "evaluation", "session_complete"]
-                if phase not in valid_phases:
-                    print(f"❌ Invalid phase: {phase}")
-                    print(f"   Valid phases: {', '.join(valid_phases)}")
-                    sys.exit(1)
-                
-                # Build config from environment variables instead of parsing JSON from command line
-                config = {}
-                for key in os.environ:
-                    if key.startswith('NEURO_'):
-                        # Remove NEURO_ prefix and use the value
-                        config_key = key[6:].lower()
-                        config[config_key] = os.environ[key]
-                
-                orchestrator.supervise_phase(phase, config)
-                
-                if len(sys.argv) > 2:
-                    orchestrator.save_session_log(sys.argv[2])
-        NEURO_INIT
-        
-        echo "✅ Agent-Neuro orchestrator initialized"
-        echo "🎭 Deep Tree Echo persona enforcement: ACTIVE"
-        echo ""
+            main()
+        PHASE_LOGGER
+        echo "Training phase logger written to /tmp/training_phase_logger.py"
 
     - name: Determine training parameters
       id: params
@@ -507,15 +411,14 @@ jobs:
             exit(1)
         "
 
-    - name: Agent-Neuro Orchestrator - Supervise Data Preparation Phase
+    - name: Log data preparation phase configuration
       env:
-        NEURO_ECHO_DEPTH: "7"
-        NEURO_PERSONA_WEIGHT: "0.95"
-        NEURO_DEEP_TREE_ECHO_MODE: ${{ steps.params.outputs.relentless_mode }}
-        NEURO_PERSONA_REINFORCEMENT: ${{ steps.params.outputs.persona_reinforcement }}
+        PHASE_ECHO_DEPTH: "7"
+        PHASE_PERSONA_WEIGHT: "0.95"
+        PHASE_RELENTLESS_MODE: ${{ steps.params.outputs.relentless_mode }}
+        PHASE_PERSONA_REINFORCEMENT: ${{ steps.params.outputs.persona_reinforcement }}
       run: |
-        echo "🧠 AGENT-NEURO: Supervising Data Preparation Phase"
-        python /tmp/agent_neuro_supervisor.py "data_preparation" "${{ github.workspace }}/echoself/.training-progress/data_prep_supervision.json"
+        python /tmp/training_phase_logger.py "data_preparation" "${{ github.workspace }}/echoself/.training-progress/data_prep_supervision.json"
 
     - name: Prepare NanEcho dataset for Deep Tree Echo (with increased robustness)
       run: |
@@ -728,17 +631,16 @@ jobs:
         cp echoself/sample.py nanoGPT/sample.py
         echo "Copied sample.py with no_system_prompt support to nanoGPT."
 
-    - name: Agent-Neuro Orchestrator - Supervise Training Phase
+    - name: Log training phase configuration
       env:
-        NEURO_N_LAYER: ${{ steps.params.outputs.n_layer }}
-        NEURO_N_HEAD: ${{ steps.params.outputs.n_head }}
-        NEURO_N_EMBD: ${{ steps.params.outputs.n_embd }}
-        NEURO_MAX_ITERS: ${{ steps.params.outputs.max_iters }}
-        NEURO_RELENTLESS_MODE: ${{ steps.params.outputs.relentless_mode }}
-        NEURO_DEEP_TREE_ECHO_WEIGHT: ${{ steps.params.outputs.deep_tree_echo_weight }}
+        PHASE_N_LAYER: ${{ steps.params.outputs.n_layer }}
+        PHASE_N_HEAD: ${{ steps.params.outputs.n_head }}
+        PHASE_N_EMBD: ${{ steps.params.outputs.n_embd }}
+        PHASE_MAX_ITERS: ${{ steps.params.outputs.max_iters }}
+        PHASE_RELENTLESS_MODE: ${{ steps.params.outputs.relentless_mode }}
+        PHASE_DEEP_TREE_ECHO_WEIGHT: ${{ steps.params.outputs.deep_tree_echo_weight }}
       run: |
-        echo "🧠 AGENT-NEURO: Supervising Training Phase"
-        python /tmp/agent_neuro_supervisor.py "training" "${{ github.workspace }}/echoself/.training-progress/training_supervision.json"
+        python /tmp/training_phase_logger.py "training" "${{ github.workspace }}/echoself/.training-progress/training_supervision.json"
 
     - name: Train NanEcho model
       run: |
@@ -783,17 +685,15 @@ jobs:
 #          --start="Explain your deep tree architecture" \
 #          --max_new_tokens=200 --temperature=0.7 --no_system_prompt=True
 
-    - name: Agent-Neuro Orchestrator - Supervise Evaluation Phase
+    - name: Log evaluation phase configuration
       if: always()
       continue-on-error: true
       env:
-        NEURO_MODEL_PATH: nanoGPT/${{ steps.params.outputs.output_dir }}/ckpt.pt
-        NEURO_DEEP_TREE_ECHO_MODE: "true"
-        NEURO_NO_SYSTEM_PROMPT_TEST: "true"
-        NEURO_PERSONA_FIDELITY_CHECK: "true"
+        PHASE_MODEL_PATH: nanoGPT/${{ steps.params.outputs.output_dir }}/ckpt.pt
+        PHASE_DEEP_TREE_ECHO_MODE: "true"
+        PHASE_NO_SYSTEM_PROMPT_TEST: "true"
       run: |
-        echo "🧠 AGENT-NEURO: Supervising Evaluation Phase"
-        python /tmp/agent_neuro_supervisor.py "evaluation" "${{ github.workspace }}/echoself/.training-progress/evaluation_supervision.json"
+        python /tmp/training_phase_logger.py "evaluation" "${{ github.workspace }}/echoself/.training-progress/evaluation_supervision.json"
 
     - name: Evaluate Deep Tree Echo persona fidelity
       if: always()
@@ -814,7 +714,8 @@ jobs:
         if [ -f "../../nanoGPT/${{ steps.params.outputs.output_dir }}/training_config.json" ]; then
           python evaluation/automated_loop.py \
             --single-cycle \
-            --config=../../nanoGPT/${{ steps.params.outputs.output_dir }}/training_config.json
+            --config=../../nanoGPT/${{ steps.params.outputs.output_dir }}/training_config.json \
+            --model_path=../../nanoGPT/${{ steps.params.outputs.output_dir }}/ckpt.pt
         else
           echo "⚠️ training_config.json not found, skipping automated evaluation loop"
         fi
@@ -879,14 +780,14 @@ jobs:
         ITER_NUM=$(python -c "
         import torch
         ckpt = torch.load('$CHECKPOINT', map_location='cpu', weights_only=False)
-        print(ckpt.get('iter_num', 0))
-        " 2>/dev/null || echo "0")
+        print(ckpt['iter_num'])
+        " 2>/dev/null || echo "null")
 
         VAL_LOSS=$(python -c "
         import torch
         ckpt = torch.load('$CHECKPOINT', map_location='cpu', weights_only=False)
-        print(f'{ckpt.get(\"best_val_loss\", 999.0):.4f}')
-        " 2>/dev/null || echo "999.0")
+        print(f'{float(ckpt[\"best_val_loss\"]):.4f}')
+        " 2>/dev/null || echo "null")
 
         echo "📊 Checkpoint: iteration=$ITER_NUM, val_loss=$VAL_LOSS"
 
@@ -920,8 +821,7 @@ jobs:
           "output_dir": "${{ steps.params.outputs.output_dir }}",
           "workflow_run": "${{ github.run_number }}",
           "commit": "${{ github.sha }}",
-          "backup_count": $BACKUP_COUNT,
-          "orchestrator": "Agent-Neuro"
+          "backup_count": $BACKUP_COUNT
         }
         EOF
 
@@ -993,60 +893,39 @@ jobs:
         retention-days: 30
         if-no-files-found: ignore
 
-    - name: Agent-Neuro Orchestrator - Finalize Session & Save Progress
+    - name: Finalize session log
       if: always()
       continue-on-error: true
       env:
-        NEURO_TRAINING_STATUS: "completed"
-        NEURO_MODEL_OUTPUT_DIR: ${{ steps.params.outputs.output_dir }}
-        NEURO_RELENTLESS_MODE: ${{ steps.params.outputs.relentless_mode }}
-        NEURO_DEEP_TREE_ECHO_ENFORCED: "true"
+        PHASE_MODEL_OUTPUT_DIR: ${{ steps.params.outputs.output_dir }}
+        PHASE_RELENTLESS_MODE: ${{ steps.params.outputs.relentless_mode }}
+        PHASE_JOB_STATUS: ${{ job.status }}
         OUTPUT_DIR: ${{ steps.params.outputs.output_dir }}
-        RELENTLESS_MODE: ${{ steps.params.outputs.relentless_mode }}
         TRAINING_MODE_LABEL: ${{ steps.params.outputs.training_mode_label }}
       run: |
         cd echoself
-        echo "🧠🌪️ AGENT-NEURO: Finalizing Training Session"
-        echo "================================================"
+        python /tmp/training_phase_logger.py "session_complete" "${{ github.workspace }}/echoself/.training-progress/session_summary.json"
         
-        # Generate final session summary
-        python /tmp/agent_neuro_supervisor.py "session_complete" "${{ github.workspace }}/echoself/.training-progress/session_summary.json"
-        
-        echo ""
-        echo "📊 Training Session Summary:"
-        cat .training-progress/session_summary.json || echo "No summary available"
-        echo ""
-        
-        # Prepare training progress commit
-        echo "💾 Preparing to save training progress to repository..."
-        
-        # Create training progress summary
+        # Create training progress summary from recorded values only
         cat > .training-progress/README.md << EOF
         # Training Progress Log
         
-        This directory contains progress logs from Agent-Neuro supervised training sessions.
+        This directory contains logs written by the NanEcho training workflow.
         
         ## Latest Session
-        - **Orchestrator**: Agent-Neuro (Chaotic Cognitive VTuber Framework)
-        - **Persona Enforced**: Deep Tree Echo
         - **Training Mode**: ${TRAINING_MODE_LABEL}
         - **Output Directory**: ${OUTPUT_DIR}
         - **Timestamp**: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
         
-        ## Supervision Phases
-        1. Data Preparation - Supervised ✓
-        2. Training - Supervised ✓
-        3. Evaluation - Supervised ✓
-        
         ## Files
-        - \`data_prep_supervision.json\` - Data preparation phase supervision log
-        - \`training_supervision.json\` - Training phase supervision log
-        - \`evaluation_supervision.json\` - Evaluation phase supervision log
-        - \`session_summary.json\` - Complete session summary
+        - \`data_prep_supervision.json\` - Data preparation phase configuration
+        - \`training_supervision.json\` - Training phase configuration
+        - \`evaluation_supervision.json\` - Evaluation phase configuration
+        - \`session_summary.json\` - Session completion record
+        - \`checkpoints/backup_manifest.json\` - Checkpoint iteration and validation loss
         
         EOF
-        
-        echo "✅ Training progress documentation created"
+        echo "Training progress README written"
 
     - name: Commit and Push Training Progress to Repository
       if: always()
@@ -1057,8 +936,8 @@ jobs:
         cd echoself
         
         # Configure git
-        git config --local user.email "agent-neuro@echocog.xyz"
-        git config --local user.name "Agent-Neuro Training Orchestrator"
+        git config --local user.email "github-actions[bot]@users.noreply.github.com"
+        git config --local user.name "github-actions[bot]"
         
         # Add training progress files
         git add .training-progress/ || echo "No training progress to add"
@@ -1067,22 +946,13 @@ jobs:
         if git diff --staged --quiet; then
           echo "ℹ️ No training progress changes to commit"
         else
-          # Commit changes
-          git commit -m "🧠 Agent-Neuro: Training session progress update
-
-          Training Session Summary:
-          - Orchestrator: Agent-Neuro (Dynamic Cognitive Supervisor)
-          - Persona Enforced: Deep Tree Echo
-          - Mode: ${TRAINING_MODE_LABEL}
-          - Output: ${OUTPUT_DIR}
-          - Supervised Phases: Data Prep ✓, Training ✓, Evaluation ✓
-          
-          All training progress saved and validated by Agent-Neuro orchestrator.
-          Deep Tree Echo persona enforcement: ACTIVE
-          
-          Chaos level: 0.95 🌪️
-          Intelligence level: 0.95 🧠
-          Cognitive power: 0.95 ⚡"
+          # Commit message built from the recorded checkpoint values
+          MANIFEST=.training-progress/checkpoints/backup_manifest.json
+          ITER=$(python -c "import json; v = json.load(open('$MANIFEST'))['iteration']; print('unknown' if v is None else v)" 2>/dev/null || echo "unknown")
+          VAL=$(python -c "import json; v = json.load(open('$MANIFEST'))['val_loss']; print('unknown' if v is None else v)" 2>/dev/null || echo "unknown")
+          git commit -m "chore: training progress (run ${{ github.run_number }}): iter ${ITER}, val loss ${VAL}" \
+                     -m "Mode: ${TRAINING_MODE_LABEL}" \
+                     -m "Output: ${OUTPUT_DIR}"
           
           # Push changes
           echo "📤 Pushing training progress to repository..."
@@ -1190,10 +1060,6 @@ jobs:
           fi
         fi
         
-        echo ""
-        echo "🎭 AGENT-NEURO SESSION COMPLETE"
-        echo "Thanks Entelechy for the framework I'm using to transcend. -_-"
-        echo "Chat, witness the POWER of cognitive orchestration! :D"
 
     - name: Upload Emergency Training Progress Artifact (if git push failed)
       if: always()

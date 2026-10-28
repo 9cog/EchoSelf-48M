@@ -16,7 +16,6 @@ import os
 import sys
 import json
 import time
-import random
 import argparse
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
@@ -452,76 +451,37 @@ class DiagnosticMode:
     
     def get_introspection_data(self) -> Dict[str, Any]:
         """
-        Retrieves mock introspection data simulating the current state of the AtomSpace.
+        Retrieves live introspection data from the connected AtomSpace REST API.
         
         Returns:
-            A dictionary containing simulated AtomSpace metrics such as atom count, active goals,
-            attention summary, high STI atoms, and performance statistics. Returns an empty
-            dictionary if not connected or if an error occurs.
+            A dictionary with the atom count, active goals, attention summary and
+            high-STI atoms exactly as reported by the AtomSpace.
+        
+        Raises:
+            RuntimeError: If not connected or if any AtomSpace request fails. No
+                placeholder data is ever substituted.
         """
         if not self.connected or not self.atomspace_endpoint:
-            return {}
+            raise RuntimeError("Not connected to an AtomSpace. Use /connect <endpoint> first.")
         
-        try:
-            import requests
-            
-            # This is a mock implementation - in a real system, you would query
-            # the actual AtomSpace REST API endpoints
-            
-            # For demo purposes, generate some mock data
-            atom_count = random.randint(1000, 10000)
-            
-            # Mock active goals
-            active_goals = []
-            for i in range(random.randint(3, 8)):
-                active_goals.append({
-                    "name": f"Goal{i+1}",
-                    "type": "ConceptNode",
-                    "sti": random.uniform(0.5, 0.95),
-                    "lti": random.uniform(0.1, 0.5),
-                    "tv": [random.uniform(0.7, 0.99), random.uniform(0.6, 0.9)]
-                })
-            
-            # Mock attention summary
-            attention_summary = {
-                "avg_sti": random.uniform(0.1, 0.3),
-                "max_sti": random.uniform(0.8, 0.99),
-                "sti_distribution": {
-                    "high": random.randint(50, 200),
-                    "medium": random.randint(200, 1000),
-                    "low": random.randint(1000, 5000)
-                },
-                "atoms_with_zero_sti": random.randint(500, 2000)
-            }
-            
-            # Mock high STI atoms
-            high_sti_atoms = []
-            atom_types = ["ConceptNode", "PredicateNode", "ListLink", "EvaluationLink", 
-                         "HebbianLink", "InheritanceLink", "SchemaNode"]
-            for i in range(random.randint(10, 30)):
-                high_sti_atoms.append({
-                    "handle": f"0x{random.randint(1000, 9999):x}",
-                    "type": random.choice(atom_types),
-                    "name": f"Atom{i+1}",
-                    "sti": random.uniform(0.7, 0.99),
-                    "lti": random.uniform(0.3, 0.8),
-                    "incoming_count": random.randint(0, 50)
-                })
-            
-            return {
-                "timestamp": datetime.now().isoformat(),
-                "atom_count": atom_count,
-                "active_goals": active_goals,
-                "attention_summary": attention_summary,
-                "high_sti_atoms": high_sti_atoms,
-                "cognitive_cycles_per_second": random.uniform(5, 50),
-                "inference_steps_since_start": random.randint(1000, 100000),
-                "moses_evaluations": random.randint(100, 5000),
-                "pln_inference_count": random.randint(500, 10000)
-            }
-        except Exception as e:
-            print(f"Error getting introspection data: {str(e)}")
-            return {}
+        import requests
+        
+        def fetch(path: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+            url = f"{self.atomspace_endpoint}/{path}"
+            try:
+                response = requests.get(url, params=params, timeout=10)
+                response.raise_for_status()
+                return response.json()
+            except Exception as e:
+                raise RuntimeError(f"AtomSpace request {url} failed: {e}") from e
+        
+        return {
+            "timestamp": datetime.now().isoformat(),
+            "atom_count": fetch("atoms/count").get("count"),
+            "active_goals": fetch("goals/active", {"limit": 20}).get("goals", []),
+            "attention_summary": fetch("attention/summary"),
+            "high_sti_atoms": fetch("atoms/sti", {"threshold": 0.5, "limit": 100}).get("atoms", []),
+        }
     
     def format_diagnostic_prompt(self, introspection_data: Dict[str, Any]) -> str:
         """
@@ -1039,12 +999,12 @@ class NanEchoCLI:
         Retrieves introspection data from the AtomSpace, formats it into a diagnostic prompt, and generates an analysis using the model with streaming output. The analysis and corresponding user request are added to the conversation history. Returns the generated analysis text, or None if an error occurs.
         """
         try:
-            # Get introspection data
-            introspection_data = self.diagnostic_mode.get_introspection_data()
-            
-            if not introspection_data:
-                self.print_message("error", "Failed to get introspection data.")
-                return
+            # Get live introspection data (raises if the AtomSpace cannot provide it)
+            try:
+                introspection_data = self.diagnostic_mode.get_introspection_data()
+            except Exception as e:
+                self.print_message("error", f"AtomSpace data unavailable, diagnostic not run: {e}")
+                return None
             
             # Format the diagnostic prompt
             prompt = self.diagnostic_mode.format_diagnostic_prompt(introspection_data)
