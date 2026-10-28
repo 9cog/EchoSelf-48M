@@ -97,7 +97,8 @@ export interface SimulationRecord {
   arenaId: string;
   startTime: Date;
   endTime?: Date;
-  results: SimulationResult;
+  /** null until the sandbox model has actually assessed the hypothesis. */
+  results: SimulationResult | null;
   consensusVote?: ConsensusVote;
 }
 

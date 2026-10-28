@@ -47,12 +47,22 @@ export interface EmbodiedGrounding {
     modality: string;
     affordance: string;
   }>;
-  /** Measured by the Python engine; null when grounded by the model. */
+  /** Measured by the Python engine; null when it is not available. */
   bodySchemaRelevance: number | null;
-  /** Measured by the Python engine; null when grounded by the model. */
+  /**
+   * Measured by the Python engine when a real visual frame and a goal were
+   * supplied; null otherwise.
+   */
   predictionError: number | null;
   /** Which engine produced this grounding. */
-  source?: "virtual-embodiment" | "model";
+  source?: "model" | "model+virtual-embodiment";
+}
+
+export interface EmbodimentContext {
+  objects?: Array<{ id: string; position?: number[]; value?: number }>;
+  goal?: { type: string; valueThreshold?: number };
+  /** A real visual frame (H x W x 3); required for a perceive-act cycle. */
+  visual?: number[][][];
 }
 
 export interface BridgeStatus {
@@ -206,18 +216,13 @@ print(json.dumps(out))
   // ---------- Virtual Embodiment ----------
 
   /**
-   * Ground language in embodied metaphors by calling the Python
-   * VirtualEmbodiment engine.
-   *
-   * Without Python, the language model grounds the text from the
-   * embodied-grounding prompt template.
+   * Ground language in embodied metaphors. The language model always writes
+   * the grounding from the embodied-grounding prompt template; when Python is
+   * available the VirtualEmbodiment engine adds its measured values.
    */
   public async groundLanguageInEmbodiment(
     language: string,
-    environmentContext: {
-      objects?: Array<{ id: string; position?: number[]; value?: number }>;
-      goal?: { type: string; valueThreshold?: number };
-    } = {}
+    environmentContext: EmbodimentContext = {}
   ): Promise<EmbodiedGrounding> {
     if (this.pythonAvailable === null) {
       await this.checkPythonAvailability();
@@ -232,7 +237,7 @@ print(json.dumps(out))
   /** Model-written grounding (prompt template + validated JSON). */
   private async groundLanguageWithModel(
     language: string,
-    environmentContext: Record<string, unknown>
+    environmentContext: EmbodimentContext
   ): Promise<EmbodiedGrounding> {
     const instructions = renderPromptTemplate({
       id: "embodied-grounding",
@@ -245,7 +250,11 @@ print(json.dumps(out))
       ],
       data: {
         language,
-        "environment context": JSON.stringify(environmentContext),
+        // The raw visual frame is measured by the Python engine, not prompted.
+        "environment context": JSON.stringify({
+          objects: environmentContext.objects,
+          goal: environmentContext.goal,
+        }),
       },
       styleExamples: [
         'groundedMetaphors: ["The concept grasp grounds through touch: understanding as holding"]',
@@ -289,85 +298,90 @@ print(json.dumps(out))
     };
   }
 
+  /**
+   * Python path: the model writes the grounding (metaphors and
+   * sensorimotor mappings, from the embodied-grounding prompt template);
+   * the VirtualEmbodiment engine contributes only what it actually measures
+   * (body-schema energy and, when a real visual frame and a goal are
+   * supplied, the prediction error of one perceive-act cycle).
+   */
   private async groundLanguagePython(
     language: string,
-    environmentContext: Record<string, unknown>
+    environmentContext: EmbodimentContext
   ): Promise<EmbodiedGrounding> {
-    // Build a safe environment state for Python (numpy arrays constructed in-script)
-    const objectsJson = JSON.stringify(
-      ((environmentContext.objects as any[]) || []).map((o: any) => ({
-        id: o.id,
-        position: o.position || [0, 0, 0],
-        value: o.value || 0.5,
-      }))
+    const grounding = await this.groundLanguageWithModel(
+      language,
+      environmentContext
     );
 
+    const payload = JSON.stringify({
+      objects: (environmentContext.objects || []).map(o => ({
+        id: o.id,
+        position: o.position || [0, 0, 0],
+        value: o.value ?? null,
+      })),
+      goal: environmentContext.goal ?? null,
+      visual: environmentContext.visual ?? null,
+    });
+
+    // The payload is passed on stdin, never interpolated into the script.
     const script = `
 import sys, json, numpy as np
-sys.path.insert(0, '${this.projectRoot}')
+sys.path.insert(0, ${JSON.stringify(this.projectRoot)})
 from virtual_embodiment import VirtualEmbodiment
 
+ctx = json.loads(sys.stdin.read())
 embodiment = VirtualEmbodiment()
 
-objects_raw = json.loads('''${objectsJson}''')
-environment = {
-    'objects': [
-        {'id': o['id'], 'position': np.array(o['position']), 'value': o['value']}
-        for o in objects_raw
-    ],
-    'terrain': {'walkable': [{'center': np.array([1.0, 0.0, 0.0])}]}
-}
+prediction_error = None
+if ctx['visual'] is not None and ctx['goal'] is not None:
+    environment = {
+        'objects': [
+            {'id': o['id'], 'position': np.array(o['position']), 'value': o['value']}
+            for o in ctx['objects'] if o['value'] is not None
+        ],
+        'terrain': {'walkable': []},
+        'visual': np.asarray(ctx['visual'], dtype=float),
+    }
+    result = embodiment.perceive_act_cycle(environment, ctx['goal'])
+    if result.get('action') is not None:
+        prediction_error = round(float(result['prediction_error']), 4)
 
-goal = ${environmentContext.goal ? `json.loads('''${JSON.stringify(environmentContext.goal)}''')` : "None"}
-
-result = embodiment.perceive_act_cycle(environment, goal)
 proprio = embodiment.get_proprioception()
-
-# Map concepts in the language to sensorimotor modalities
-language = '''${language.replace(/'/g, "\\'")}'''
-words = language.lower().split()
-
-modality_map = {
-    'see': 'vision', 'look': 'vision', 'observe': 'vision', 'watch': 'vision',
-    'hear': 'audio', 'listen': 'audio', 'sound': 'audio',
-    'touch': 'touch', 'feel': 'touch', 'grasp': 'touch', 'hold': 'touch',
-    'move': 'proprioception', 'walk': 'proprioception', 'run': 'proprioception',
-    'sense': 'interoception', 'aware': 'interoception',
-}
-
-mappings = []
-for word in words:
-    if word in modality_map:
-        mappings.append({
-            'concept': word,
-            'modality': modality_map[word],
-            'affordance': f'{word}_action'
-        })
-
-metaphors = [
-    f"The concept grounds through {m['modality']} as {m['concept']}"
-    for m in mappings
-]
-
-prediction_error = float(result.get('prediction_error', 0.0))
-
-out = {
-    'originalLanguage': language,
-    'groundedMetaphors': metaphors,
-    'sensoriMotorMappings': mappings,
+print(json.dumps({
     'bodySchemaRelevance': float(proprio['energy']),
-    'predictionError': round(prediction_error, 4)
-}
-
-print(json.dumps(out))
+    'predictionError': prediction_error,
+}))
 `;
 
-    const { stdout } = await execFileAsync(this.pythonPath, ["-c", script], {
-      timeout: 15000,
+    const measured = await new Promise<{
+      bodySchemaRelevance: number | null;
+      predictionError: number | null;
+    }>((resolve, reject) => {
+      const child = execFile(
+        this.pythonPath,
+        ["-c", script],
+        { timeout: 15000 },
+        (error, stdout) => {
+          if (error) {
+            reject(error);
+            return;
+          }
+          try {
+            resolve(JSON.parse(stdout.trim()));
+          } catch (parseError) {
+            reject(parseError);
+          }
+        }
+      );
+      child.stdin?.end(payload);
     });
+
     return {
-      ...(JSON.parse(stdout.trim()) as EmbodiedGrounding),
-      source: "virtual-embodiment",
+      ...grounding,
+      bodySchemaRelevance: measured.bodySchemaRelevance,
+      predictionError: measured.predictionError,
+      source: "model+virtual-embodiment",
     };
   }
 }

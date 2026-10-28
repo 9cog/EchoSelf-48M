@@ -420,18 +420,41 @@ export class ConsensusWorkflow {
     );
 
     try {
-      // Aggregate results from simulations
-      const votes: ConsensusVote[] = context.simulationResults.map(
-        simulation => ({
+      // Aggregate results from simulations. Only simulations the model has
+      // actually assessed, with a model-reported confidence, can vote; an
+      // unassessed simulation or a missing confidence is never given an
+      // invented value.
+      const votes: ConsensusVote[] = [];
+      const unassessed: string[] = [];
+      for (const simulation of context.simulationResults) {
+        const results = simulation.results;
+        const confidence = results?.metrics.confidence;
+        if (
+          !results ||
+          typeof confidence !== "number" ||
+          !Number.isFinite(confidence)
+        ) {
+          unassessed.push(simulation.virtualAgentId);
+          continue;
+        }
+        votes.push({
           virtualAgentId: simulation.virtualAgentId,
-          vote: simulation.results.success ? "approve" : "reject",
-          confidence: simulation.results.metrics.confidence || 0.5,
-          reasoning: simulation.results.outcome,
-          modifications: simulation.results.success
-            ? []
-            : simulation.results.recommendations,
-        })
-      );
+          vote: results.success ? "approve" : "reject",
+          confidence,
+          reasoning: results.outcome,
+          modifications: results.success ? [] : results.recommendations,
+        });
+      }
+      if (unassessed.length > 0) {
+        console.warn(
+          `Consensus Workflow: excluding ${unassessed.length} simulation(s) without a model assessment/confidence: ${unassessed.join(", ")}`
+        );
+      }
+      if (votes.length === 0) {
+        throw new Error(
+          "No simulation has a model-assessed result with a confidence value; consensus cannot be computed"
+        );
+      }
 
       const consensus = this.aggregateVotes(votes);
 
@@ -506,8 +529,12 @@ export class ConsensusWorkflow {
   }
 
   private deriveStrategy(simulations: SimulationRecord[]): string {
-    const successfulSimulations = simulations.filter(s => s.results.success);
-    const successRate = successfulSimulations.length / simulations.length;
+    const assessed = simulations.filter(s => s.results !== null);
+    if (assessed.length === 0) {
+      return "No assessed simulations";
+    }
+    const successfulSimulations = assessed.filter(s => s.results?.success);
+    const successRate = successfulSimulations.length / assessed.length;
 
     if (successRate > 0.8) {
       return "High confidence strategy: Proceed with implementation";
