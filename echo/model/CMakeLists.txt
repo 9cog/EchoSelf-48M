@@ -1,6 +1,7 @@
 ADD_GUILE_MODULE (FILES
 	eva-model.scm
 	llm.scm
+	prompts.scm
 	face-choice.scm
 	self-model.scm
 	faces.scm

@@ -185,6 +185,11 @@
 		(DefinedPredicate "look at person")
 		(Put (DefinedPredicate "Show model expression")
 			(ConceptNode "new-arrival"))
+		; Greet the new arrival: the words come from the model, via the
+		; "greet-new-arrival" prompt template.  If the model fails, Eva
+		; says nothing (error logged) and the sequence continues.
+		(True (Evaluation (GroundedPredicate "scm: model-say-template")
+			(ListLink (Concept "greet-new-arrival"))))
 		(Put (DefinedPredicate "Publish behavior")
 			(Concept "Look at new arrival"))
 		(Evaluation (GroundedPredicate "scm: print-msg-face")
@@ -713,11 +718,12 @@
 		(TrueLink)
 	))
 
-;; Actions for loud sound: the model decides what (if anything) to say.
+;; Actions for loud sound: what Eva says is written by the model from
+;; the "loud-sound" prompt template (see eva-model/prompts.scm).
 (DefineLink
 	(DefinedPredicate "React to loud sound")
-	(Evaluation (GroundedPredicate "scm: model-say-reaction")
-		(ListLink (Node "You just heard a sudden, very loud sound."))))
+	(Evaluation (GroundedPredicate "scm: model-say-template")
+		(ListLink (Concept "loud-sound"))))
 
 ;;Actions for various levels of sound
 (DefineLink

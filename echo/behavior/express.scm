@@ -276,21 +276,60 @@
 	(PutLink (DefinedPredicateNode "Show model gesture")
 		(ConceptNode "positive")))
 
+;
 ; --------------------------------------------------------
 ;
-; model-say-reaction SITUATION -- ask the model what Eva says in the
-; situation described by the name of the SITUATION atom, and say it.
-; On model failure nothing is said, the error is logged, and false is
-; returned.
-;
-(define-public (model-say-reaction situation)
+; Spoken reactions.  Each reaction is a prompt template (see
+; `eva-model/prompts.scm`), filled with the current situation; the
+; model writes what Eva says, and it is then said.  On model failure
+; nothing is said, the error is logged, and false is returned.
+
+; Slot values describing what Eva currently perceives.
+(define (situation-slots)
+	(let* ((n (catch #t
+				(lambda ()
+					(inexact->exact (round (string->number (cog-name
+						(cog-execute! (DefinedSchema "Num visible faces")))))))
+				(lambda _ #f)))
+			(hour (tm:hour (localtime (current-time)))))
+		`((visible-faces .
+			,(cond
+				((not n) "")
+				((= n 0) "You cannot see anyone in front of you.")
+				((= n 1) "You can see one person in front of you.")
+				(else (format #f "You can see ~a people in front of you." n))))
+		  (time-of-day .
+			,(cond ((< hour 5) "night") ((< hour 12) "morning")
+				((< hour 18) "afternoon") (else "evening"))))))
+
+(define (say-model-utterance where thunk)
 	(catch #t
 		(lambda ()
-			(let ((utterance (eva-model-utterance (cog-name situation))))
+			(let ((utterance (thunk)))
 				(cog-evaluate! (Put (DefinedPredicate "Say") (Node utterance)))
 				(stv 1 1)))
 		(lambda (key . args)
-			(eva-model-log-error "spoken reaction" key args)
+			(eva-model-log-error where key args)
 			(stv 0 1))))
+
+;
+; model-say-template TEMPLATE -- TEMPLATE is a ConceptNode naming a
+; prompt template (for example "loud-sound" or "greet-new-arrival").
+; Ask the model what Eva says in that situation, and say it.
+;
+(define-public (model-say-template template)
+	(say-model-utterance
+		(string-append "spoken reaction: " (cog-name template))
+		(lambda ()
+			(eva-template-utterance (string->symbol (cog-name template))
+				(situation-slots)))))
+
+;
+; model-say-reaction SITUATION -- ask the model what Eva says in the
+; situation described by the name of the SITUATION atom, and say it.
+;
+(define-public (model-say-reaction situation)
+	(say-model-utterance "spoken reaction"
+		(lambda () (eva-model-utterance (cog-name situation)))))
 
 ;; ------------------------------------------------------------------

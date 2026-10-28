@@ -79,15 +79,23 @@
 ; design would be to replace the sequence of bind-links, below, by
 ; open-psi rules (and/or the forward chainer).  For now, the stove-pipe
 ; is OK, because there are so few rules that are used.
+;
+; Why the most recent imperative performed no action (a string), or #f.
+; `grounded-talk` puts this into the "imperative-cannot-do" prompt
+; template, so the model can explain in character what went wrong.
+(define imperative-failure #f)
+(define-public (imperative-failure-reason) imperative-failure)
+
 (define-public (imperative-process imp)
 "
   Process imperative IMP, which should be a SentenceNode.
   Returns the list of actions that were performed, as strings (possibly
-  empty).
+  empty).  When it is empty, `(imperative-failure-reason)` says why.
   No reply is generated here; the caller asks the model for one.
 "
 	(define do-dbg-prt #t)
 	(define performed '())
+	(set! imperative-failure #f)
 
 	; Make the current sentence visible to everyone.
 	(StateLink current-sentence imp)
@@ -139,6 +147,9 @@
 				(set! performed
 					(map (lambda (a) (format #f "~a" a)) action-list)))
 			(lambda (key . args)
+				(set! imperative-failure
+					(format #f "the action failed while being performed (~a: ~s)"
+						key args))
 				(display "Exception: ") (display key) (newline)
 				(display args) (newline)
 				(display "Bad eval: ") (display act-do-do) (newline)))
@@ -153,8 +164,11 @@
 				action-list)
 
 		(if (null? action-list)
-			(State (Anchor "Chatbot: ChatbotEvaAction")
-				(Concept "Chatbot: NoResult")))
+			(begin
+				(set! imperative-failure
+					"none of the words matched an action you know how to perform")
+				(State (Anchor "Chatbot: ChatbotEvaAction")
+					(Concept "Chatbot: NoResult"))))
 
 		(State (Anchor "Chatbot: ChatbotEva")
 			(Concept "Chatbot: ProcessFinished"))
