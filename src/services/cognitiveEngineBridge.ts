@@ -4,13 +4,18 @@
  *
  * Bridges the TypeScript frontend with Python cognitive engines
  * (RelevanceRealizationEngine and VirtualEmbodiment) via child_process.
- * Provides graceful fallback when Python is unavailable.
+ * When Python is unavailable, relevance evaluation fails with an error (no
+ * heuristic scores are substituted); embodiment grounding is instead written
+ * by the language model from a prompt template (validated JSON), with the
+ * engine-measured fields left null.
  */
 
 import { execFile } from "child_process";
 import { promisify } from "util";
 import * as path from "path";
 import process from "node:process";
+import { completePrompt, parseModelJson } from "./modelProvider";
+import { renderPromptTemplate } from "./promptTemplates";
 
 const execFileAsync = promisify(execFile);
 
@@ -42,8 +47,22 @@ export interface EmbodiedGrounding {
     modality: string;
     affordance: string;
   }>;
-  bodySchemaRelevance: number;
-  predictionError: number;
+  /** Measured by the Python engine; null when it is not available. */
+  bodySchemaRelevance: number | null;
+  /**
+   * Measured by the Python engine when a real visual frame and a goal were
+   * supplied; null otherwise.
+   */
+  predictionError: number | null;
+  /** Which engine produced this grounding. */
+  source?: "model" | "model+virtual-embodiment";
+}
+
+export interface EmbodimentContext {
+  objects?: Array<{ id: string; position?: number[]; value?: number }>;
+  goal?: { type: string; valueThreshold?: number };
+  /** A real visual frame (H x W x 3); required for a perceive-act cycle. */
+  visual?: number[][][];
 }
 
 export interface BridgeStatus {
@@ -95,7 +114,7 @@ export class CognitiveEngineBridge {
       this.pythonAvailable = false;
       this.pythonVersion = null;
       console.warn(
-        "CognitiveEngineBridge: Python 3 or numpy not available. Using TypeScript fallbacks."
+        "CognitiveEngineBridge: Python 3 or numpy not available. Cognitive engines are unavailable."
       );
       return false;
     }
@@ -123,8 +142,7 @@ export class CognitiveEngineBridge {
    * Evaluate the relevance of a concept within a given context by calling
    * the Python RelevanceRealizationEngine.
    *
-   * Falls back to a heuristic TypeScript implementation when Python is
-   * unavailable.
+   * Throws when Python is unavailable.
    */
   public async evaluateRelevance(
     conceptId: string,
@@ -139,10 +157,12 @@ export class CognitiveEngineBridge {
       await this.checkPythonAvailability();
     }
 
-    if (this.pythonAvailable) {
-      return this.evaluateRelevancePython(conceptId, conceptData, context);
+    if (!this.pythonAvailable) {
+      throw new Error(
+        "Relevance engine unavailable: Python 3 with numpy is required"
+      );
     }
-    return this.evaluateRelevanceFallback(conceptId, conceptData, context);
+    return this.evaluateRelevancePython(conceptId, conceptData, context);
   }
 
   private async evaluateRelevancePython(
@@ -182,250 +202,186 @@ if results:
         }
     }
 else:
-    out = {
-        "conceptId": '${conceptId}',
-        "relevanceScore": 0,
-        "criteria": {"goalAlignment":0,"predictivePower":0,"cognitiveEconomy":0,"noveltyValue":0,"contextualFit":0},
-        "opponentProcessStates": {"explorationExploitation":0.5,"breadthDepth":0.5,"speedAccuracy":0.5,"certaintyOpenness":0.6}
-    }
+    sys.exit("RelevanceRealizationEngine returned no result")
 
 print(json.dumps(out))
 `;
 
-    try {
-      const { stdout } = await execFileAsync(this.pythonPath, ["-c", script], {
-        timeout: 15000,
-      });
-      return JSON.parse(stdout.trim()) as RelevanceEvaluation;
-    } catch (error) {
-      console.error(
-        "Python relevance evaluation failed, using fallback:",
-        error
-      );
-      return this.evaluateRelevanceFallback(conceptId, conceptData, context);
-    }
-  }
-
-  private evaluateRelevanceFallback(
-    conceptId: string,
-    conceptData: Record<string, unknown>,
-    context: {
-      goals?: string[];
-      noveltyNeeded?: boolean;
-      precisionNeeded?: boolean;
-    }
-  ): RelevanceEvaluation {
-    // Heuristic fallback when Python is not available
-    const complexity = (conceptData.complexity as number) ?? 0.5;
-    const cognitiveEconomy = 1.0 / (1.0 + complexity);
-
-    const goalAlignment = context.goals && context.goals.length > 0 ? 0.5 : 0.3;
-    const noveltyValue = context.noveltyNeeded ? 0.7 : 0.4;
-    const predictivePower = 0.5;
-    const contextualFit = 0.7;
-
-    const relevanceScore =
-      goalAlignment * 0.3 +
-      predictivePower * 0.25 +
-      cognitiveEconomy * 0.2 +
-      noveltyValue * 0.15 +
-      contextualFit * 0.1;
-
-    return {
-      conceptId,
-      relevanceScore: Math.round(relevanceScore * 10000) / 10000,
-      criteria: {
-        goalAlignment,
-        predictivePower,
-        cognitiveEconomy: Math.round(cognitiveEconomy * 10000) / 10000,
-        noveltyValue,
-        contextualFit,
-      },
-      opponentProcessStates: {
-        explorationExploitation: 0.5,
-        breadthDepth: 0.5,
-        speedAccuracy: 0.5,
-        certaintyOpenness: 0.6,
-      },
-    };
+    const { stdout } = await execFileAsync(this.pythonPath, ["-c", script], {
+      timeout: 15000,
+    });
+    return JSON.parse(stdout.trim()) as RelevanceEvaluation;
   }
 
   // ---------- Virtual Embodiment ----------
 
   /**
-   * Ground language in embodied metaphors by calling the Python
-   * VirtualEmbodiment engine.
-   *
-   * Falls back to a template-based TypeScript implementation when Python
-   * is unavailable.
+   * Ground language in embodied metaphors. The language model always writes
+   * the grounding from the embodied-grounding prompt template; when Python is
+   * available the VirtualEmbodiment engine adds its measured values.
    */
   public async groundLanguageInEmbodiment(
     language: string,
-    environmentContext: {
-      objects?: Array<{ id: string; position?: number[]; value?: number }>;
-      goal?: { type: string; valueThreshold?: number };
-    } = {}
+    environmentContext: EmbodimentContext = {}
   ): Promise<EmbodiedGrounding> {
     if (this.pythonAvailable === null) {
       await this.checkPythonAvailability();
     }
 
-    if (this.pythonAvailable) {
-      return this.groundLanguagePython(language, environmentContext);
+    if (!this.pythonAvailable) {
+      return this.groundLanguageWithModel(language, environmentContext);
     }
-    return this.groundLanguageFallback(language, environmentContext);
+    return this.groundLanguagePython(language, environmentContext);
   }
 
-  private async groundLanguagePython(
+  /** Model-written grounding (prompt template + validated JSON). */
+  private async groundLanguageWithModel(
     language: string,
-    environmentContext: Record<string, unknown>
+    environmentContext: EmbodimentContext
   ): Promise<EmbodiedGrounding> {
-    // Build a safe environment state for Python (numpy arrays constructed in-script)
-    const objectsJson = JSON.stringify(
-      ((environmentContext.objects as any[]) || []).map((o: any) => ({
-        id: o.id,
-        position: o.position || [0, 0, 0],
-        value: o.value || 0.5,
-      }))
-    );
+    const instructions = renderPromptTemplate({
+      id: "embodied-grounding",
+      purpose:
+        "Ground the given language in embodied, sensorimotor metaphors (4E cognition: embodied, embedded, enacted, extended).",
+      structure: [
+        'Reply with ONLY a JSON object: {"groundedMetaphors": string[], "sensoriMotorMappings": [{"concept": string, "modality": "vision" | "audio" | "touch" | "proprioception" | "interoception", "affordance": string}]}',
+        "Map each concept in the language that has a bodily basis to the modality it grounds through and the action it affords.",
+        "Write one grounded metaphor per mapping.",
+      ],
+      data: {
+        language,
+        // The raw visual frame is measured by the Python engine, not prompted.
+        "environment context": JSON.stringify({
+          objects: environmentContext.objects,
+          goal: environmentContext.goal,
+        }),
+      },
+      styleExamples: [
+        'groundedMetaphors: ["The concept grasp grounds through touch: understanding as holding"]',
+      ],
+    });
 
-    const script = `
-import sys, json, numpy as np
-sys.path.insert(0, '${this.projectRoot}')
-from virtual_embodiment import VirtualEmbodiment
-
-embodiment = VirtualEmbodiment()
-
-objects_raw = json.loads('''${objectsJson}''')
-environment = {
-    'objects': [
-        {'id': o['id'], 'position': np.array(o['position']), 'value': o['value']}
-        for o in objects_raw
-    ],
-    'terrain': {'walkable': [{'center': np.array([1.0, 0.0, 0.0])}]}
-}
-
-goal = ${environmentContext.goal ? `json.loads('''${JSON.stringify(environmentContext.goal)}''')` : "None"}
-
-result = embodiment.perceive_act_cycle(environment, goal)
-proprio = embodiment.get_proprioception()
-
-# Map concepts in the language to sensorimotor modalities
-language = '''${language.replace(/'/g, "\\'")}'''
-words = language.lower().split()
-
-modality_map = {
-    'see': 'vision', 'look': 'vision', 'observe': 'vision', 'watch': 'vision',
-    'hear': 'audio', 'listen': 'audio', 'sound': 'audio',
-    'touch': 'touch', 'feel': 'touch', 'grasp': 'touch', 'hold': 'touch',
-    'move': 'proprioception', 'walk': 'proprioception', 'run': 'proprioception',
-    'sense': 'interoception', 'aware': 'interoception',
-}
-
-mappings = []
-for word in words:
-    if word in modality_map:
-        mappings.append({
-            'concept': word,
-            'modality': modality_map[word],
-            'affordance': f'{word}_action'
-        })
-
-metaphors = [
-    f"The concept grounds through {m['modality']} as {m['concept']}"
-    for m in mappings
-] or [f"Language '{language[:50]}' maps to embodied spatial reasoning"]
-
-prediction_error = float(result.get('prediction_error', 0.0))
-
-out = {
-    'originalLanguage': language,
-    'groundedMetaphors': metaphors,
-    'sensoriMotorMappings': mappings or [{'concept': 'abstract', 'modality': 'proprioception', 'affordance': 'spatial_reasoning'}],
-    'bodySchemaRelevance': float(proprio['energy']),
-    'predictionError': round(prediction_error, 4)
-}
-
-print(json.dumps(out))
-`;
-
-    try {
-      const { stdout } = await execFileAsync(this.pythonPath, ["-c", script], {
-        timeout: 15000,
-      });
-      return JSON.parse(stdout.trim()) as EmbodiedGrounding;
-    } catch (error) {
-      console.error(
-        "Python embodiment grounding failed, using fallback:",
-        error
+    const raw = await completePrompt(instructions, language, {
+      temperature: 0.4,
+      maxTokens: 600,
+    });
+    const data = parseModelJson<{
+      groundedMetaphors?: unknown;
+      sensoriMotorMappings?: unknown;
+    }>(raw);
+    if (
+      !Array.isArray(data.groundedMetaphors) ||
+      !Array.isArray(data.sensoriMotorMappings)
+    ) {
+      throw new Error(
+        "The model's grounding is missing groundedMetaphors or sensoriMotorMappings."
       );
-      return this.groundLanguageFallback(language, environmentContext);
     }
-  }
-
-  private groundLanguageFallback(
-    language: string,
-    _environmentContext: Record<string, unknown>
-  ): EmbodiedGrounding {
-    // Template-based fallback when Python is unavailable
-    const words = language.toLowerCase().split(/\s+/);
-
-    const modalityKeywords: Record<string, string> = {
-      see: "vision",
-      look: "vision",
-      observe: "vision",
-      hear: "audio",
-      listen: "audio",
-      touch: "touch",
-      feel: "touch",
-      grasp: "touch",
-      move: "proprioception",
-      walk: "proprioception",
-      sense: "interoception",
-    };
-
-    const mappings: Array<{
-      concept: string;
-      modality: string;
-      affordance: string;
-    }> = [];
-
-    for (const word of words) {
-      if (modalityKeywords[word]) {
-        mappings.push({
-          concept: word,
-          modality: modalityKeywords[word],
-          affordance: `${word}_action`,
-        });
-      }
-    }
-
-    const metaphors =
-      mappings.length > 0
-        ? mappings.map(
-            m =>
-              `The concept "${m.concept}" grounds through ${m.modality} modality`
-          )
-        : [
-            `Language "${language.substring(0, 50)}" maps to abstract spatial reasoning`,
-            "Embodied grounding via proprioceptive self-model",
-          ];
+    const mappings = data.sensoriMotorMappings
+      .filter(
+        (m): m is Record<string, unknown> => typeof m === "object" && m !== null
+      )
+      .map(m => ({
+        concept: String(m.concept ?? ""),
+        modality: String(m.modality ?? ""),
+        affordance: String(m.affordance ?? ""),
+      }))
+      .filter(m => m.concept && m.modality);
 
     return {
       originalLanguage: language,
-      groundedMetaphors: metaphors,
-      sensoriMotorMappings:
-        mappings.length > 0
-          ? mappings
-          : [
-              {
-                concept: "abstract",
-                modality: "proprioception",
-                affordance: "spatial_reasoning",
-              },
-            ],
-      bodySchemaRelevance: 1.0,
-      predictionError: 0.0,
+      groundedMetaphors: data.groundedMetaphors.map(String),
+      sensoriMotorMappings: mappings,
+      bodySchemaRelevance: null,
+      predictionError: null,
+      source: "model",
+    };
+  }
+
+  /**
+   * Python path: the model writes the grounding (metaphors and
+   * sensorimotor mappings, from the embodied-grounding prompt template);
+   * the VirtualEmbodiment engine contributes only what it actually measures
+   * (body-schema energy and, when a real visual frame and a goal are
+   * supplied, the prediction error of one perceive-act cycle).
+   */
+  private async groundLanguagePython(
+    language: string,
+    environmentContext: EmbodimentContext
+  ): Promise<EmbodiedGrounding> {
+    const grounding = await this.groundLanguageWithModel(
+      language,
+      environmentContext
+    );
+
+    const payload = JSON.stringify({
+      objects: (environmentContext.objects || []).map(o => ({
+        id: o.id,
+        position: o.position || [0, 0, 0],
+        value: o.value ?? null,
+      })),
+      goal: environmentContext.goal ?? null,
+      visual: environmentContext.visual ?? null,
+    });
+
+    // The payload is passed on stdin, never interpolated into the script.
+    const script = `
+import sys, json, numpy as np
+sys.path.insert(0, ${JSON.stringify(this.projectRoot)})
+from virtual_embodiment import VirtualEmbodiment
+
+ctx = json.loads(sys.stdin.read())
+embodiment = VirtualEmbodiment()
+
+prediction_error = None
+if ctx['visual'] is not None and ctx['goal'] is not None:
+    environment = {
+        'objects': [
+            {'id': o['id'], 'position': np.array(o['position']), 'value': o['value']}
+            for o in ctx['objects'] if o['value'] is not None
+        ],
+        'terrain': {'walkable': []},
+        'visual': np.asarray(ctx['visual'], dtype=float),
+    }
+    result = embodiment.perceive_act_cycle(environment, ctx['goal'])
+    if result.get('action') is not None:
+        prediction_error = round(float(result['prediction_error']), 4)
+
+proprio = embodiment.get_proprioception()
+print(json.dumps({
+    'bodySchemaRelevance': float(proprio['energy']),
+    'predictionError': prediction_error,
+}))
+`;
+
+    const measured = await new Promise<{
+      bodySchemaRelevance: number | null;
+      predictionError: number | null;
+    }>((resolve, reject) => {
+      const child = execFile(
+        this.pythonPath,
+        ["-c", script],
+        { timeout: 15000 },
+        (error, stdout) => {
+          if (error) {
+            reject(error);
+            return;
+          }
+          try {
+            resolve(JSON.parse(stdout.trim()));
+          } catch (parseError) {
+            reject(parseError);
+          }
+        }
+      );
+      child.stdin?.end(payload);
+    });
+
+    return {
+      ...grounding,
+      bodySchemaRelevance: measured.bodySchemaRelevance,
+      predictionError: measured.predictionError,
+      source: "model+virtual-embodiment",
     };
   }
 }

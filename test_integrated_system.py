@@ -220,7 +220,10 @@ def demonstrate_integrated_system():
                 {'center': np.array([0.0, 1.0, 0.0]), 'type': 'forest'},
                 {'center': np.array([-1.0, 0.0, 0.0]), 'type': 'water'}
             ]
-        }
+        },
+        # Test fixture: a blank visual frame so the perception step has an
+        # explicit input (VirtualEmbodiment never synthesises one itself).
+        'visual': np.zeros((64, 64, 3))
     }
     
     print(f"\nEnvironment has:")

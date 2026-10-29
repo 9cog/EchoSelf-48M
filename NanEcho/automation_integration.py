@@ -22,121 +22,62 @@ from pathlib import Path
 # Add NanEcho to path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-# Import real implementations with comprehensive error handling
+# Import the real evaluation implementations. Anything that fails to import is
+# recorded in IMPORT_ERRORS; the corresponding evaluation is then reported as
+# not run - no stand-in classes or synthetic scores are used.
 TORCH_AVAILABLE = False
 ECHO_FIDELITY_AVAILABLE = False
 AUTOMATED_LOOP_AVAILABLE = False
 NANOCOG_EVALUATOR_AVAILABLE = False
 ECHO_MODEL_AVAILABLE = False
+IMPORT_ERRORS: Dict[str, str] = {}
 
-# Check for PyTorch first
 try:
     import torch
-    import numpy as np
     TORCH_AVAILABLE = True
-except ImportError:
-    print("⚠️ PyTorch not available - using fallback evaluation")
+except ImportError as e:
+    IMPORT_ERRORS["torch"] = str(e)
+    print(f"⚠️ PyTorch not available - model evaluation cannot run: {e}")
 
-# Only try to import real implementations if we're in an environment that supports them
+# echo_fidelity and netalk require torch at import time
 if TORCH_AVAILABLE:
     try:
-        # Try each import individually to identify which ones fail
-        try:
-            from evaluation.echo_fidelity import EchoFidelityEvaluator, EchoFidelityMetrics
-            ECHO_FIDELITY_AVAILABLE = True
-        except ImportError as e:
-            print(f"⚠️ Echo fidelity evaluation not available: {e}")
-        
-        try:
-            from evaluation.automated_loop import AutomatedEvaluationLoop
-            AUTOMATED_LOOP_AVAILABLE = True
-        except ImportError as e:
-            print(f"⚠️ Automated evaluation loop not available: {e}")
-        
-        try:
-            from evaluation.metrics import NanoCogEvaluator
-            NANOCOG_EVALUATOR_AVAILABLE = True
-        except ImportError as e:
-            print(f"⚠️ NanoCog evaluator not available: {e}")
-        
-        try:
-            from netalk import EchoModelConfig
-            ECHO_MODEL_AVAILABLE = True
-        except ImportError as e:
-            print(f"⚠️ Echo model config not available: {e}")
-            
-    except Exception as e:
-        print(f"⚠️ Error importing real implementations: {e}")
+        from evaluation.echo_fidelity import EchoFidelityEvaluator, EchoFidelityMetrics
+        ECHO_FIDELITY_AVAILABLE = True
+    except ImportError as e:
+        IMPORT_ERRORS["echo_fidelity"] = str(e)
+        print(f"⚠️ Echo fidelity evaluation not available: {e}")
 
-# Create fallback classes for all missing implementations
-if not ECHO_FIDELITY_AVAILABLE:
-    class EchoFidelityMetrics:
-        def __init__(self, **kwargs):
-            for k, v in kwargs.items():
-                setattr(self, k, v)
-        
-        # Set default values for expected attributes
-        identity_recognition = 0.7
-        persona_consistency = 0.65
-        adaptive_attention_understanding = 0.6
-        recursive_reasoning_capability = 0.55
-        hypergraph_comprehension = 0.5
-        cognitive_synergy_demonstration = 0.45
-        overall_fidelity = 0.575
+    try:
+        from netalk import EchoModelConfig
+        ECHO_MODEL_AVAILABLE = True
+    except ImportError as e:
+        IMPORT_ERRORS["netalk"] = str(e)
+        print(f"⚠️ Echo model config not available: {e}")
 
-    class EchoFidelityEvaluator:
-        def __init__(self, model_config):
-            self.model_config = model_config
-            
-        def run_full_evaluation(self):
-            return EchoFidelityMetrics()
-            
-        def generate_report(self, metrics, report_path):
-            # Create a simple fallback report
-            with open(report_path, 'w') as f:
-                json.dump({
-                    "fallback_report": True,
-                    "overall_fidelity": metrics.overall_fidelity
-                }, f, indent=2)
+try:
+    from evaluation.automated_loop import AutomatedEvaluationLoop
+    AUTOMATED_LOOP_AVAILABLE = True
+except ImportError as e:
+    IMPORT_ERRORS["automated_loop"] = str(e)
+    print(f"⚠️ Automated evaluation loop not available: {e}")
 
-if not AUTOMATED_LOOP_AVAILABLE:
-    class AutomatedEvaluationLoop:
-        def __init__(self, config_path=None):
-            self.running = False
-            
-        def start_evaluation_loop(self):
-            print("⚠️ Automated evaluation loop not available - using fallback")
-            
-        def stop_evaluation_loop(self):
-            self.running = False
-            
-        def get_evaluation_status(self):
-            return {"running": False, "status": "fallback_mode"}
+try:
+    from evaluation.metrics import NanoCogEvaluator
+    NANOCOG_EVALUATOR_AVAILABLE = True
+except ImportError as e:
+    IMPORT_ERRORS["metrics"] = str(e)
+    print(f"⚠️ NanoCog evaluator not available: {e}")
 
-if not NANOCOG_EVALUATOR_AVAILABLE:
-    class NanoCogEvaluator:
-        def __init__(self, config):
-            self.config = config
-            
-        def evaluate_model_generation(self, samples, reference=None, atomspace_state=None):
-            return {
-                "timestamp": datetime.now().isoformat(),
-                "sample_count": len(samples),
-                "evaluation_metrics": {
-                    "symbolic_accuracy": {"syntax_accuracy": 0.7, "semantic_accuracy": 0.6}
-                },
-                "overall_performance": {"overall_score": 0.65, "performance_level": "fallback_mode"}
-            }
+# Report statuses that mark a report as not containing real model evaluation
+NON_EVALUATED_REPORT_STATUSES = {
+    "not_evaluated", "test_mode", "fallback_synthetic_data", "fallback_evaluation"
+}
 
-if not ECHO_MODEL_AVAILABLE:
-    class EchoModelConfig:
-        def __init__(self, model_path, device):
-            self.model_path = model_path
-            self.device = device
-            
-        def load_model(self):
-            print(f"⚠️ Echo model config not available - cannot load {self.model_path}")
-            return False
+
+class EvaluationNotRun(RuntimeError):
+    """Raised when the model could not actually be evaluated."""
+
 
 class NanEchoAutomationIntegrator:
     """
@@ -295,96 +236,50 @@ class NanEchoAutomationIntegrator:
             training_mode: Current training mode
             
         Returns:
-            Real evaluation data dictionary
+            Evaluation data dictionary measured from the model's generations
+        
+        Raises:
+            EvaluationNotRun: If the dependencies are missing, the model cannot be
+                loaded, or the evaluation fails.
         """
+        if not (TORCH_AVAILABLE and ECHO_FIDELITY_AVAILABLE and ECHO_MODEL_AVAILABLE):
+            raise EvaluationNotRun(f"Evaluation dependencies unavailable: {IMPORT_ERRORS}")
+        
         try:
-            if not ECHO_FIDELITY_AVAILABLE or not TORCH_AVAILABLE or not ECHO_MODEL_AVAILABLE:
-                print("⚠️ Real evaluation dependencies not available, using fallback...")
-                return self._generate_fallback_evaluation_data()
-            
-            # Load the model configuration
-            device = "cuda" if TORCH_AVAILABLE and torch.cuda.is_available() else "cpu"
+            device = "cuda" if torch.cuda.is_available() else "cpu"
             model_config = EchoModelConfig(model_path, device)
-            
-            if not model_config.load_model():
-                print(f"⚠️ Failed to load model from {model_path}, using fallback...")
-                return self._generate_fallback_evaluation_data()
-            
-            # Create evaluator and run evaluation
+            model_config.load_model()
+        except Exception as e:
+            raise EvaluationNotRun(f"Failed to load model from {model_path}: {e}") from e
+        
+        try:
             evaluator = EchoFidelityEvaluator(model_config)
             metrics = evaluator.run_full_evaluation()
             
-            # Generate comprehensive report
             report_path = f"echo_fidelity_report_{int(time.time())}.json"
             evaluator.generate_report(metrics, report_path)
-            
-            # Convert to expected format
-            evaluation_data = {
-                'fidelity_metrics': {
-                    'identity_recognition': metrics.identity_recognition,
-                    'persona_consistency': metrics.persona_consistency,
-                    'adaptive_attention_understanding': metrics.adaptive_attention_understanding,
-                    'recursive_reasoning_capability': metrics.recursive_reasoning_capability,
-                    'hypergraph_comprehension': metrics.hypergraph_comprehension,
-                    'cognitive_synergy_demonstration': metrics.cognitive_synergy_demonstration,
-                    'overall_fidelity': metrics.overall_fidelity
-                },
-                'evaluation_timestamp': time.time(),
-                'status': 'real_evaluation' if ECHO_FIDELITY_AVAILABLE else 'fallback_evaluation',
-                'training_mode': training_mode,
-                'model_path': model_path,
-                'report_path': report_path
-            }
-            
-            print(f"✅ Evaluation completed - Overall fidelity: {metrics.overall_fidelity:.3f}")
-            return evaluation_data
-            
         except Exception as e:
-            print(f"⚠️ Error in evaluation: {e}")
-            print("Falling back to synthetic evaluation data...")
-            return self._generate_fallback_evaluation_data()
-    
-    def _generate_fallback_evaluation_data(self) -> Dict[str, Any]:
-        """
-        Generate synthetic evaluation data when real evaluation is not possible.
+            raise EvaluationNotRun(f"Evaluation of {model_path} failed: {e}") from e
         
-        Returns:
-            Fallback evaluation data that simulates realistic training results
-        """
-        # Generate more realistic synthetic scores based on training mode
-        base_performance = 0.65  # Base performance level
-        
-        # Simulate realistic variation in metrics
-        import random
-        random.seed(int(time.time()) % 1000)  # Some variability but reproducible within same second
-        
-        identity_score = base_performance + random.uniform(-0.15, 0.20)
-        persona_score = base_performance + random.uniform(-0.10, 0.15)
-        attention_score = base_performance + random.uniform(-0.20, 0.10) 
-        recursive_score = base_performance + random.uniform(-0.25, 0.05)
-        hypergraph_score = base_performance + random.uniform(-0.30, 0.05)
-        synergy_score = base_performance + random.uniform(-0.35, 0.10)
-        
-        # Ensure scores are within valid range
-        scores = [identity_score, persona_score, attention_score, recursive_score, hypergraph_score, synergy_score]
-        scores = [max(0.0, min(1.0, score)) for score in scores]
-        
-        overall_fidelity = sum(scores) / len(scores)
-        
-        return {
+        evaluation_data = {
             'fidelity_metrics': {
-                'identity_recognition': scores[0],
-                'persona_consistency': scores[1], 
-                'adaptive_attention_understanding': scores[2],
-                'recursive_reasoning_capability': scores[3],
-                'hypergraph_comprehension': scores[4],
-                'cognitive_synergy_demonstration': scores[5],
-                'overall_fidelity': overall_fidelity
+                'identity_recognition': metrics.identity_recognition,
+                'persona_consistency': metrics.persona_consistency,
+                'adaptive_attention_understanding': metrics.adaptive_attention_understanding,
+                'recursive_reasoning_capability': metrics.recursive_reasoning_capability,
+                'hypergraph_comprehension': metrics.hypergraph_comprehension,
+                'cognitive_synergy_demonstration': metrics.cognitive_synergy_demonstration,
+                'overall_fidelity': metrics.overall_fidelity
             },
             'evaluation_timestamp': time.time(),
-            'status': 'fallback_synthetic_data',
-            'note': 'Generated when real evaluation unavailable'
+            'status': 'evaluated',
+            'training_mode': training_mode,
+            'model_path': model_path,
+            'report_path': report_path
         }
+        
+        print(f"✅ Evaluation completed - Overall fidelity: {metrics.overall_fidelity:.3f}")
+        return evaluation_data
     
     def _deep_update(self, base_dict: Dict, update_dict: Dict):
         """Recursively update nested dictionaries."""
@@ -416,6 +311,12 @@ class NanEchoAutomationIntegrator:
         if os.path.exists(evaluation_report_path):
             with open(evaluation_report_path, 'r') as f:
                 evaluation_data = json.load(f)
+            status = evaluation_data.get('status')
+            if status in NON_EVALUATED_REPORT_STATUSES or evaluation_data.get('fallback_report'):
+                raise EvaluationNotRun(
+                    f"Evaluation report {evaluation_report_path} does not contain a real "
+                    f"model evaluation (status: {status})"
+                )
         else:
             # Run real evaluation if report not found
             print(f"⚠️ Evaluation report not found: {evaluation_report_path}")
@@ -424,7 +325,11 @@ class NanEchoAutomationIntegrator:
         
         # Extract key metrics
         fidelity_metrics = evaluation_data.get('fidelity_metrics', {})
-        overall_fidelity = fidelity_metrics.get('overall_fidelity', 0.0)
+        if 'overall_fidelity' not in fidelity_metrics:
+            raise EvaluationNotRun(
+                f"Evaluation report {evaluation_report_path} has no fidelity metrics"
+            )
+        overall_fidelity = fidelity_metrics['overall_fidelity']
         
         # Determine quality gate status
         quality_status = self._evaluate_quality_gates(fidelity_metrics, training_mode)
@@ -442,6 +347,7 @@ class NanEchoAutomationIntegrator:
         
         analysis_results = {
             "timestamp": datetime.now().isoformat(),
+            "status": "evaluated",
             "model_path": model_path,
             "training_mode": training_mode,
             "overall_fidelity": overall_fidelity,
@@ -662,7 +568,7 @@ class NanEchoAutomationIntegrator:
         
         return triggers
     
-    def integrate_with_evaluation_loop(self, config_path: Optional[str] = None) -> AutomatedEvaluationLoop:
+    def integrate_with_evaluation_loop(self, config_path: Optional[str] = None) -> "AutomatedEvaluationLoop":
         """
         Create and configure an AutomatedEvaluationLoop instance for continuous evaluation.
         
@@ -671,103 +577,72 @@ class NanEchoAutomationIntegrator:
             
         Returns:
             Configured AutomatedEvaluationLoop instance
-        """
-        try:
-            if not AUTOMATED_LOOP_AVAILABLE:
-                print("⚠️ AutomatedEvaluationLoop not available, using fallback...")
-                return self._create_fallback_evaluation_loop()
-            
-            # Create evaluation loop with configuration
-            eval_loop = AutomatedEvaluationLoop(config_path)
-            
-            print("✅ Integrated with automated evaluation loop")
-            return eval_loop
-            
-        except Exception as e:
-            print(f"⚠️ Error creating evaluation loop: {e}")
-            # Return a simple fallback that won't crash the system
-            return self._create_fallback_evaluation_loop()
-    
-    def _create_fallback_evaluation_loop(self):
-        """Create a fallback evaluation loop when the real one is unavailable."""
-        class FallbackEvaluationLoop:
-            def __init__(self):
-                self.running = False
-                
-            def start_evaluation_loop(self):
-                print("⚠️ Using fallback evaluation loop - continuous evaluation disabled")
-                
-            def stop_evaluation_loop(self):
-                self.running = False
-                
-            def get_evaluation_status(self):
-                return {
-                    "running": False,
-                    "evaluation_count": 0,
-                    "status": "fallback_mode"
-                }
         
-        return FallbackEvaluationLoop()
+        Raises:
+            EvaluationNotRun: If the evaluation loop is not available.
+        """
+        if not AUTOMATED_LOOP_AVAILABLE:
+            raise EvaluationNotRun(
+                f"AutomatedEvaluationLoop not available: {IMPORT_ERRORS.get('automated_loop')}"
+            )
+        eval_loop = AutomatedEvaluationLoop(config_path)
+        print("✅ Integrated with automated evaluation loop")
+        return eval_loop
     
     def run_comprehensive_nanocog_evaluation(self, 
                                            generated_samples: List[str], 
-                                           reference_corpus: Optional[List[str]] = None) -> Dict[str, Any]:
+                                           reference_corpus: Optional[List[str]] = None,
+                                           atomspace_state: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Run comprehensive NanoCog evaluation using the real metrics system.
         
         Args:
             generated_samples: List of model-generated samples to evaluate
             reference_corpus: Optional reference corpus for comparison
+            atomspace_state: Optional live AtomSpace state for diagnostic alignment
             
         Returns:
             Comprehensive evaluation results
+        
+        Raises:
+            EvaluationNotRun: If the evaluator is unavailable or there are no samples.
         """
+        if not NANOCOG_EVALUATOR_AVAILABLE:
+            raise EvaluationNotRun(f"NanoCog evaluator not available: {IMPORT_ERRORS.get('metrics')}")
+        if not generated_samples:
+            raise EvaluationNotRun("No generated samples to evaluate")
+        
+        evaluator = NanoCogEvaluator(self.config.get('nanocog_evaluation', {}))
+        results = evaluator.evaluate_model_generation(
+            generated_samples, 
+            reference_corpus, 
+            atomspace_state
+        )
+        
+        print(f"✅ Comprehensive NanoCog evaluation completed")
+        print(f"   Overall Score: {results.get('overall_performance', {}).get('overall_score', 0):.3f}")
+        
+        return results
+
+    def generate_model_samples(self, model_path: str, prompts: List[str],
+                               max_new_tokens: int = 200) -> List[str]:
+        """Generate one completion per prompt with the trained model.
+
+        Raises:
+            EvaluationNotRun: If the model cannot be loaded or generation fails.
+        """
+        if not (TORCH_AVAILABLE and ECHO_MODEL_AVAILABLE):
+            raise EvaluationNotRun(f"Model generation dependencies unavailable: {IMPORT_ERRORS}")
         try:
-            if not NANOCOG_EVALUATOR_AVAILABLE:
-                print("⚠️ NanoCog evaluator not available, using fallback...")
-                return {
-                    "timestamp": datetime.now().isoformat(),
-                    "status": "evaluator_unavailable",
-                    "sample_count": len(generated_samples),
-                    "overall_performance": {"overall_score": 0.5, "performance_level": "fallback"}
-                }
-            
-            # Create NanoCog evaluator
-            evaluator = NanoCogEvaluator(self.config.get('nanocog_evaluation', {}))
-            
-            # Get mock AtomSpace state for evaluation
-            atomspace_state = {
-                "timestamp": datetime.now().isoformat(),
-                "atom_count": len(generated_samples) * 10,  # Estimate
-                "active_goals": [{"name": f"goal_{i}", "sti": 0.7, "priority": 3} for i in range(3)],
-                "attention_distribution": {
-                    "high_sti_count": 50,
-                    "medium_sti_count": 150, 
-                    "low_sti_count": 300
-                },
-                "bottlenecks": []
-            }
-            
-            # Run comprehensive evaluation
-            results = evaluator.evaluate_model_generation(
-                generated_samples, 
-                reference_corpus, 
-                atomspace_state
-            )
-            
-            print(f"✅ Comprehensive NanoCog evaluation completed")
-            print(f"   Overall Score: {results.get('overall_performance', {}).get('overall_score', 0):.3f}")
-            
-            return results
-            
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            model_config = EchoModelConfig(model_path, device)
+            model_config.load_model()
+            return [
+                f"{prompt}\n{model_config.generate(prompt, max_new_tokens=max_new_tokens, temperature=0.8, top_k=40)}"
+                for prompt in prompts
+            ]
         except Exception as e:
-            print(f"⚠️ Error in comprehensive evaluation: {e}")
-            return {
-                "timestamp": datetime.now().isoformat(),
-                "error": str(e),
-                "status": "evaluation_failed",
-                "overall_performance": {"overall_score": 0.0, "performance_level": "error"}
-            }
+            raise EvaluationNotRun(f"Sample generation with {model_path} failed: {e}") from e
 
     def save_analysis_results(self, results: Dict[str, Any], output_path: str):
         """Save analysis results to file and persist cross-cycle improvement history."""
@@ -875,6 +750,8 @@ def main():
                        help="Run comprehensive NanoCog evaluation")
     parser.add_argument("--start_continuous", action="store_true",
                        help="Start continuous evaluation loop")
+    parser.add_argument("--reference_corpus", type=str, default=None,
+                       help="Reference corpus file (one sample per line) for --run_comprehensive")
     
     args = parser.parse_args()
     
@@ -891,11 +768,24 @@ def main():
     integrator = NanEchoAutomationIntegrator(args.config)
     
     # Analyze results with real evaluation
-    results = integrator.analyze_training_results(
-        args.model_path,
-        args.evaluation_report,
-        args.training_mode
-    )
+    try:
+        results = integrator.analyze_training_results(
+            args.model_path,
+            args.evaluation_report,
+            args.training_mode
+        )
+    except EvaluationNotRun as e:
+        print(f"❌ Model not evaluated: {e}")
+        with open(args.output_path, 'w') as f:
+            json.dump({
+                "timestamp": datetime.now().isoformat(),
+                "status": "not_evaluated",
+                "error": str(e),
+                "model_path": args.model_path,
+                "training_mode": args.training_mode
+            }, f, indent=2)
+        print(f"💾 Not-evaluated status written to: {args.output_path}")
+        sys.exit(1)
     
     # Save results
     integrator.save_analysis_results(results, args.output_path)
@@ -904,7 +794,6 @@ def main():
     if args.run_comprehensive:
         print("\n🔬 Running comprehensive NanoCog evaluation...")
         
-        # Generate some sample data for evaluation (in real use, this would come from the model)
         sample_prompts = [
             "Explain the CogPrime cognitive architecture:",
             "Generate Atomese code for goal-oriented behavior:",
@@ -912,14 +801,24 @@ def main():
             "Create a cognitive schematic for learning:",
             "Describe ECAN attention dynamics:"
         ]
+        reference_corpus = None
+        if args.reference_corpus:
+            with open(args.reference_corpus, 'r', encoding='utf-8') as f:
+                reference_corpus = [line.strip() for line in f if line.strip()]
         
-        # For demonstration, create mock generated samples
-        generated_samples = [f"Sample response for: {prompt}" for prompt in sample_prompts]
-        
-        comprehensive_results = integrator.run_comprehensive_nanocog_evaluation(
-            generated_samples, 
-            reference_corpus=["(ConceptNode \"reference\")", "(PredicateNode \"example\")"]
-        )
+        try:
+            generated_samples = integrator.generate_model_samples(args.model_path, sample_prompts)
+            comprehensive_results = integrator.run_comprehensive_nanocog_evaluation(
+                generated_samples,
+                reference_corpus=reference_corpus
+            )
+        except EvaluationNotRun as e:
+            print(f"❌ Comprehensive evaluation not run: {e}")
+            comprehensive_results = {
+                "timestamp": datetime.now().isoformat(),
+                "status": "not_evaluated",
+                "error": str(e)
+            }
         
         # Save comprehensive results
         comprehensive_path = args.output_path.replace('.json', '_comprehensive.json')
@@ -930,7 +829,11 @@ def main():
     # Start continuous evaluation loop if requested
     if args.start_continuous:
         print("\n🔄 Starting continuous evaluation loop...")
-        eval_loop = integrator.integrate_with_evaluation_loop(args.config)
+        try:
+            eval_loop = integrator.integrate_with_evaluation_loop(args.config)
+        except EvaluationNotRun as e:
+            print(f"❌ Continuous evaluation not started: {e}")
+            sys.exit(1)
         
         try:
             eval_loop.start_evaluation_loop()
@@ -950,7 +853,7 @@ def main():
     print(f"\n🎯 Quality Gate: {results['quality_gate_status']['status'].upper()}")
     print(f"📊 Overall Fidelity: {results['overall_fidelity']:.3f}")
     print(f"🚀 Deployment Ready: {results['quality_gate_status']['deployment_ready']}")
-    print(f"📈 Evaluation Status: {results.get('status', 'completed')}")
+    print(f"📈 Evaluation Status: {results.get('status')}")
     
     if results['automation_triggers']['trigger_next_training']:
         print(f"⏰ Next Training: +{results['automation_triggers']['training_delay_hours']} hours")

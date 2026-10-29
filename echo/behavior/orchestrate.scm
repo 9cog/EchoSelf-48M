@@ -257,7 +257,7 @@
 			(Concept "Falling asleep"))
 
 		; First, show some yawns ...
-		(Put (DefinedPredicate "Show random gesture")
+		(Put (DefinedPredicate "Show model gesture")
 			(Concept "sleepy"))
 
 		; Finally, play the go-to-sleep animation.
@@ -296,9 +296,9 @@
 		(Evaluation (DefinedPredicate "Do wake up") (ListLink))
 
 		; Also show the wake-up expression (head shake, etc.)
-		(Put (DefinedPredicate "Show random expression")
+		(Put (DefinedPredicate "Show model expression")
 			(Concept "wake-up"))
-		(Put (DefinedPredicate "Show random gesture")
+		(Put (DefinedPredicate "Show model gesture")
 			(Concept "wake-up"))
 	))
 

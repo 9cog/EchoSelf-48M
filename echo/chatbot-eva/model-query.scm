@@ -170,31 +170,39 @@
 ; "leftwards" into the synonymous but more appropriate "to the left" as
 ; the desired response.
 ;
-; Also: personality and randomization: I want her to sometimes say "I am
-; looking sideways".
+; The facts found here are only model input; the wording of the reply
+; is produced by the language model (see bot-api.scm).
 
 (define (self-wh-query QUERY)
 "
-  Process a query about self.  Return an answer, or else nil, if
-  no answer is known.  QUERY should be a SentenceNode.
+  Process a query about self.  Return a list of strings: the facts from
+  the self-model that answer the query (as verbalized by sureal), or
+  the empty list if no grounded answer is known.  QUERY should be a
+  SentenceNode.  These facts are not spoken directly; `grounded-talk`
+  gives them to the language model, which composes Eva's reply.
 "
+
+	; Turn sureal output (nested lists of words) into a string.
+	(define (words->string w)
+		(cond
+			((string? w) w)
+			((list? w) (string-join (map words->string w) " "))
+			(else (format #f "~a" w))))
 
 	; Small utility that converts rep-lnk to a string of words.
 	; Uses sureal to perform the conversion. The input must be
-	; of teh form that sureal can handle.
+	; of teh form that sureal can handle. Returns #f if not possible.
 	(define (verbalize-reply rep-lnk)
 		(if (eq? 0 (cog-arity rep-lnk))
-			'()
+			#f
 			(let ((r2l-set (cog-outgoing-atom rep-lnk 1)))
-
-(format #t "The reply is:\n~a\n" r2l-set)
-				(if (eq? 0 cog-arity r2l-set)
-					'()
-					(let
-						((string-seq (sureal r2l-set)))
-						(display string-seq) (newline)
-						string-seq
-					)))))
+				(format #t "The reply is:\n~a\n" r2l-set)
+				(if (eq? 0 (cog-arity r2l-set))
+					#f
+					(let ((string-seq (sureal r2l-set)))
+						(if (null? string-seq)
+							#f
+							(words->string string-seq)))))))
 
 	; Make the current sentence visible to everyone.
 	(StateLink current-sentence QUERY)
@@ -202,22 +210,15 @@
 	; (cog-execute! where-look-rule)
 	(cog-execute! what-doing-rule)
 
-(format #t  "Replies to questions:\n~a\n" (get-grounded-replies))
+	(format #t  "Replies to questions:\n~a\n" (get-grounded-replies))
 
-	; There may be more than one plausible reply. We should use
-	; openpsi to pick one. XXX FIXME -- do this.
-	; Alternately, this shoud probably be done with chatscript.
-	(let ((reply-words (filter verbalize-reply (get-grounded-replies))))
-(format #t "Reply words are: ~a\n" reply-words)
-		(if (null? reply-words)
-			(set! reply-words
-				(list "Sorry I didn't understand the question.\n"))
-		)
+	(let ((facts (filter-map verbalize-reply (get-grounded-replies))))
+		(format #t "Self-model facts are: ~a\n" facts)
 
 		; Free up anything attached to the anchor.
 		(map cog-extract-recursive! (get-grounded-replies))
 
-		reply-words
+		facts
 	)
 )
 

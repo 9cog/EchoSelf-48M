@@ -361,13 +361,11 @@
 
 (define-public (choose-next-face)
 "
-  Returns the face-id Node with the highest (* priority transition-priority)
-  from among the faces that are not being interacted with.
+  Returns the face-id Node to interact with next, chosen by the model
+  from among the faces that are not being interacted with.  The
+  weighted priorities (* priority transition-priority) are given to the
+  model as a hint.  If the model fails, the current face is returned.
 "
-    (define (get-maximum lst)
-        ;Get the maximum from a list of numbers.
-        (fold (lambda (prev next) (if (> prev next) prev next)) 0 lst))
-
     (define (weighted-priority x)
         (let ((p (get-priority! x))
               (tp (get-transition-priority! x)))
@@ -383,20 +381,13 @@
 
     ; If their is only one face being interacted with then continue
     ; interacting.
-    (if (null? faces)
-        interaction-face
-        (let* ((face-ids
-                    (par-map cog-number faces))
-               (wp (par-map (lambda (x) (weighted-priority x)) face-ids))
-               (max-wp (get-maximum wp))
-               (max-faces
-                    (remove (lambda (x) (equal? 0 x))
-                        (par-map (lambda (w f) (if (equal? w max-wp) f 0))
-                            wp faces))))
-            (list-ref max-faces
-                    (random (length max-faces) (random-state-from-platform)))
-        )
-    )
+    (or (model-pick-face
+            "It is time to switch to interacting with someone else. Choose who."
+            faces
+            (lambda (f)
+                (format #f "- face_id ~a: present, priority ~a"
+                    (cog-number f) (weighted-priority (cog-number f)))))
+        interaction-face)
 )
 
 ; psi-action for it is time to change the face being interacted with.

@@ -11,7 +11,6 @@ import sys
 import json
 import argparse
 import time
-import random
 from pathlib import Path
 from typing import Dict, List, Any, Tuple
 from dataclasses import dataclass
@@ -400,10 +399,14 @@ class EchoFidelityEvaluator:
     def generate_report(self, metrics: EchoFidelityMetrics, output_path: str):
         """Generate detailed evaluation report."""
         report = {
+            "status": "evaluated",
             "evaluation_timestamp": time.time(),
             "evaluation_datetime": time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime()),
             "model_path": self.model_config.model_path,
+            "checkpoint_iter_num": self.model_config.model_info.get("iter_num"),
+            "checkpoint_best_val_loss": self.model_config.model_info.get("best_val_loss"),
             "echo_depth": self.model_config.echo_depth,
+            "no_system_prompt": self.model_config.no_system_prompt,
             "fidelity_metrics": {
                 "identity_recognition": metrics.identity_recognition,
                 "persona_consistency": metrics.persona_consistency,
@@ -504,9 +507,12 @@ def main():
     model_config = EchoModelConfig(args.model_path, args.device)
     model_config.deep_tree_echo_mode = deep_tree_echo_mode
     model_config.no_system_prompt = no_system_prompt_test
-    if not model_config.load_model():
-        print("❌ Failed to load Echo Self model")
-        return
+    try:
+        model_config.load_model()
+    except Exception as e:
+        print(f"❌ Failed to load Echo Self model: {e}")
+        print("Evaluation not run; no report written.")
+        sys.exit(1)
     
     # Create evaluator
     evaluator = EchoFidelityEvaluator(model_config)

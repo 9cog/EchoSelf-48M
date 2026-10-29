@@ -254,15 +254,27 @@ export const EchoSpaceControlPanel: React.FC = () => {
                         <div className="text-sm text-gray-300">
                           Hypothesis: {sim.hypothesis}
                         </div>
-                        <div
-                          className={`text-sm mt-1 ${sim.results.success ? "text-green-400" : "text-red-400"}`}
-                        >
-                          Result: {sim.results.outcome}
-                        </div>
-                        <div className="text-xs text-gray-400 mt-1">
-                          Risk: {sim.results.riskAssessment.level} | Confidence:{" "}
-                          {(sim.results.metrics.confidence * 100).toFixed(0)}%
-                        </div>
+                        {sim.results ? (
+                          <>
+                            <div
+                              className={`text-sm mt-1 ${sim.results.success ? "text-green-400" : "text-red-400"}`}
+                            >
+                              Result: {sim.results.outcome}
+                            </div>
+                            <div className="text-xs text-gray-400 mt-1">
+                              Risk: {sim.results.riskAssessment.level} |
+                              Confidence:{" "}
+                              {typeof sim.results.metrics.confidence ===
+                              "number"
+                                ? `${(sim.results.metrics.confidence * 100).toFixed(0)}%`
+                                : "not reported"}
+                            </div>
+                          </>
+                        ) : (
+                          <div className="text-sm mt-1 text-gray-400">
+                            Not yet assessed
+                          </div>
+                        )}
                       </div>
                     )
                   )}

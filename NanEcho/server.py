@@ -31,7 +31,10 @@ from pydantic import BaseModel, Field
 
 # Add the parent directory to sys.path to import nanoGPT modules
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from model import GPTConfig, GPT
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from echo_model import _import_gpt  # finds nanoGPT's model.py (repo root or nanoGPT/)
+from openai_compat import ModelAdapter, add_openai_routes
+GPTConfig, GPT = _import_gpt()
 
 # Configure logging
 logging.basicConfig(
@@ -76,7 +79,9 @@ class ModelConfig:
             checkpoint = torch.load(self.model_path, map_location=self.device, weights_only=False)
             
             # Configure model from checkpoint
-            gptconf = GPTConfig(**checkpoint['model_args'])
+            # NanEcho checkpoints carry extra model_args (e.g. echo_depth)
+            known = set(GPTConfig.__dataclass_fields__)
+            gptconf = GPTConfig(**{k: v for k, v in checkpoint['model_args'].items() if k in known})
             self.model = GPT(gptconf)
             
             # Handle potential prefix in state dict keys
@@ -152,18 +157,36 @@ class ModelConfig:
         Returns:
             The generated text as a string, excluding the original prompt.
         """
+        tokens = []
         with torch.no_grad():
             with torch.amp.autocast(device_type='cuda' if 'cuda' in self.device else 'cpu'):
-                y = self.model.generate(
-                    x, max_new_tokens, temperature=temperature, top_k=top_k
-                )
-                generated_text = self.tokenizer.decode(y[0].tolist())
-                # Remove the prompt from the generated text
-                prompt_text = self.tokenizer.decode(x[0].tolist())
-                if generated_text.startswith(prompt_text):
-                    generated_text = generated_text[len(prompt_text):]
-                return generated_text
-    
+                for _ in range(max_new_tokens):
+                    next_token = self._next_token(x, temperature, top_k)
+                    if next_token.item() == self.tokenizer.eot_token:
+                        break
+                    tokens.append(next_token.item())
+                    x = torch.cat((x, next_token), dim=1)
+        return self.tokenizer.decode(tokens)
+
+    def _next_token(self, x, temperature, top_k):
+        """Samples the next token id from the model (shape [1, 1]). Padded vocabulary entries,
+        which have no tokenizer mapping, are never sampled."""
+        block_size = getattr(self.model.config, 'block_size', 1024)
+        idx_cond = x if x.size(1) <= block_size else x[:, -block_size:]
+        output = self.model(idx_cond)
+        logits = output[0] if isinstance(output, tuple) else output
+        next_token_logits = logits[:, -1, :].float().clone()
+        n_vocab = self.tokenizer.n_vocab
+        if next_token_logits.size(-1) > n_vocab:
+            next_token_logits[:, n_vocab:] = float('-inf')
+        if temperature > 0:
+            next_token_logits = next_token_logits / temperature
+        if top_k > 0:
+            v, _ = torch.topk(next_token_logits, min(top_k, next_token_logits.size(-1)))
+            next_token_logits[next_token_logits < v[:, [-1]]] = float('-inf')
+        probs = torch.nn.functional.softmax(next_token_logits, dim=-1)
+        return torch.multinomial(probs, num_samples=1)
+
     async def _stream_generate(self, x, max_new_tokens, temperature, top_k):
         """
         Asynchronously generates and yields tokens one at a time from the model, enabling streaming text output.
@@ -175,37 +198,9 @@ class ModelConfig:
         """
         with torch.no_grad():
             with torch.amp.autocast(device_type='cuda' if 'cuda' in self.device else 'cpu'):
-                # Get the block size limit from model config
-                block_size = getattr(self.model.config, 'block_size', 1024)
 
                 for token_index in range(max_new_tokens):
-                    # Crop input if it exceeds block size
-                    idx_cond = x if x.size(1) <= block_size else x[:, -block_size:]
-
-                    # Forward pass - nanoGPT returns logits directly or (logits, loss)
-                    output = self.model(idx_cond)
-
-                    # Handle both return types
-                    if isinstance(output, tuple):
-                        logits = output[0]
-                    else:
-                        logits = output
-
-                    # Get logits for the next token and sample
-                    next_token_logits = logits[:, -1, :].clone()
-
-                    # Apply temperature
-                    if temperature > 0:
-                        next_token_logits = next_token_logits / temperature
-
-                    # Apply top-k filtering
-                    if top_k > 0:
-                        v, _ = torch.topk(next_token_logits, min(top_k, next_token_logits.size(-1)))
-                        next_token_logits[next_token_logits < v[:, [-1]]] = float('-inf')
-
-                    # Sample from the filtered distribution
-                    probs = torch.nn.functional.softmax(next_token_logits, dim=-1)
-                    next_token = torch.multinomial(probs, num_samples=1)
+                    next_token = self._next_token(x, temperature, top_k)
 
                     # Append the new token to the input
                     x = torch.cat((x, next_token), dim=1)
@@ -839,6 +834,29 @@ def extract_recommendations(analysis: str) -> List[str]:
                     break
     
     return recommendations
+
+# --- OpenAI-compatible API ---
+# GET /v1/models and POST /v1/chat/completions, so that local model discovery
+# (e.g. Eva's echo/model/llm.scm, which probes port 8000) and other
+# OpenAI-compatible clients can use the loaded checkpoint. 503 when no model
+# is loaded.
+def _loaded_model_config() -> Optional[ModelConfig]:
+    mc = getattr(app.state, "model_config", None)
+    return mc if mc is not None and mc.model is not None else None
+
+add_openai_routes(app, ModelAdapter(
+    get_model=_loaded_model_config,
+    model_id=lambda mc: os.path.basename(mc.model_path),
+    build_prompt=lambda mc, messages: format_chat_prompt(
+        [ChatMessage(role=m["role"], content=m["content"]) for m in messages]),
+    complete=lambda mc, prompt, n, temperature, top_k: (lambda text: (
+        text, len(mc.tokenizer.encode(text))))(
+        mc.generate(prompt=prompt, max_new_tokens=n, temperature=temperature,
+                    top_k=top_k, stream=False)),
+    stream=lambda mc, prompt, n, temperature, top_k: mc.generate(
+        prompt=prompt, max_new_tokens=n, temperature=temperature, top_k=top_k, stream=True),
+    count_tokens=lambda mc, text: len(mc.tokenizer.encode(text)),
+))
 
 # --- Error Handling ---
 @app.exception_handler(HTTPException)

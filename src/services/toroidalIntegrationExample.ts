@@ -1,10 +1,7 @@
 // Example integration showing how to use the Toroidal Cognitive Architecture
 // This demonstrates various usage patterns and integration approaches
 
-import {
-  ToroidalCognitiveService,
-  useToroidalCognitive as _useToroidalCognitive,
-} from "./toroidalCognitiveService";
+import { ToroidalCognitiveService } from "./toroidalCognitiveService";
 import {
   ToroidalCognitiveOptions,
   ToroidalDialogue,
@@ -25,7 +22,7 @@ export class ToroidalIntegrationExample {
       return service.formatToroidalResponse(dialogue);
     } catch (error) {
       console.error("Basic example failed:", error);
-      return "Error: Unable to generate toroidal response";
+      throw error;
     }
   }
 
@@ -191,7 +188,7 @@ export class ToroidalIntegrationExample {
       return service.formatToroidalResponse(dialogue);
     } catch (error) {
       console.error("Auto-config processing failed:", error);
-      return "Error: Unable to process query with automatic configuration";
+      throw error;
     }
   }
 
@@ -203,9 +200,15 @@ export class ToroidalIntegrationExample {
       query: string;
       type?: "technical" | "creative" | "philosophical" | "analytical";
     }>
-  ): Promise<Array<{ query: string; response: string; error?: string }>> {
+  ): Promise<
+    Array<{ query: string; response: string | null; error?: string }>
+  > {
     const service = ToroidalCognitiveService.getInstance();
-    const results = [];
+    const results: Array<{
+      query: string;
+      response: string | null;
+      error?: string;
+    }> = [];
 
     for (const item of queries) {
       try {
@@ -217,9 +220,10 @@ export class ToroidalIntegrationExample {
         const response = service.formatToroidalResponse(dialogue);
         results.push({ query: item.query, response });
       } catch (error) {
+        // No response is substituted for a failed model call
         results.push({
           query: item.query,
-          response: "Error processing query",
+          response: null,
           error: error instanceof Error ? error.message : "Unknown error",
         });
       }

@@ -51,6 +51,7 @@ class AutomatedEvaluationLoop:
         self.evaluation_history = []
         self.performance_trends = {}
         self.running = False
+        self._model = None
         
     def _load_config(self, config_path: Optional[str]) -> Dict[str, Any]:
         """Load evaluation loop configuration."""
@@ -152,20 +153,21 @@ class AutomatedEvaluationLoop:
         logger.info("Stopping evaluation loop...")
         self.running = False
     
-    def _run_evaluation_cycle(self, cycle_number: int):
-        """Run a single evaluation cycle."""
+    def _run_evaluation_cycle(self, cycle_number: int) -> Optional[Dict[str, Any]]:
+        """Run a single evaluation cycle. Returns the results, or None if the
+        evaluation could not be run (the reason is logged)."""
         try:
-            # Generate samples from current model
+            # Generate samples from the trained model
             generated_samples = self._generate_evaluation_samples()
             
             if not generated_samples:
                 logger.warning("No samples generated for evaluation")
-                return
+                return None
             
-            # Load reference corpus
+            # Load reference corpus (None if not available)
             reference_corpus = self._load_reference_corpus()
             
-            # Get current AtomSpace state (mock for now)
+            # Get live AtomSpace state (None if no endpoint configured)
             atomspace_state = self._get_atomspace_state()
             
             # Run comprehensive evaluation
@@ -185,107 +187,90 @@ class AutomatedEvaluationLoop:
             
             # Log summary
             self._log_evaluation_summary(results)
+            return results
             
         except Exception as e:
-            logger.error(f"Error in evaluation cycle {cycle_number}: {e}")
+            logger.error(f"Evaluation cycle {cycle_number} not run: {e}")
+            return None
     
+    EVALUATION_PROMPTS = [
+        "Explain the CogPrime cognitive architecture:",
+        "Generate Atomese code for goal-oriented behavior:",
+        "Analyze potential bottlenecks in attention allocation:",
+        "Create a cognitive schematic for learning:",
+        "Describe ECAN attention dynamics:",
+        "Generate PLN inference rules:",
+        "Create MOSES fitness evaluation code:",
+        "Analyze hypergraph connectivity patterns:",
+        "Generate diagnostic recommendations:",
+        "Create cross-domain integration examples:"
+    ]
+
+    def _resolve_checkpoint_path(self) -> str:
+        """Locate the model checkpoint to evaluate."""
+        model_cfg = self.config.get("model", {})
+        if model_cfg.get("checkpoint_path"):
+            return model_cfg["checkpoint_path"]
+        return os.path.join(model_cfg.get("checkpoint_dir", ""), "ckpt.pt")
+
+    def _load_model(self):
+        """Load (once) the trained checkpoint. Raises if it cannot be loaded."""
+        if self._model is None:
+            from echo_model import EchoModel
+            device = self.config.get("model", {}).get("device", "cpu")
+            model = EchoModel(self._resolve_checkpoint_path(), device=device)
+            model.load_model()
+            self._model = model
+        return self._model
+
     def _generate_evaluation_samples(self) -> List[str]:
-        """Generate samples from the current model for evaluation."""
-        try:
-            # Mock sample generation - in real implementation, this would
-            # load the latest checkpoint and generate samples
-            
-            sample_size = self.config["evaluation"]["sample_size"]
-            
-            # For now, generate mock samples that simulate model output
-            mock_samples = []
-            
-            prompts = [
-                "Explain the CogPrime cognitive architecture:",
-                "Generate Atomese code for goal-oriented behavior:",
-                "Analyze potential bottlenecks in attention allocation:",
-                "Create a cognitive schematic for learning:",
-                "Describe ECAN attention dynamics:",
-                "Generate PLN inference rules:",
-                "Create MOSES fitness evaluation code:",
-                "Analyze hypergraph connectivity patterns:",
-                "Generate diagnostic recommendations:",
-                "Create cross-domain integration examples:"
-            ]
-            
-            for i in range(sample_size):
-                prompt = prompts[i % len(prompts)]
-                
-                # Mock generated response
-                mock_response = f"""
-{prompt}
+        """Generate samples from the trained model for evaluation.
 
-;; Generated Atomese/Scheme code
-(ImplicationLink (stv 0.8 0.9)
-  (EvaluationLink (PredicateNode "context-active") (VariableNode "$X"))
-  (ExecutionLink (SchemaNode "respond-appropriately") (VariableNode "$X")))
+        Raises if the model cannot be loaded or generation fails; no stand-in
+        samples are ever produced.
+        """
+        model = self._load_model()
+        gen_cfg = self.config["model"].get("generation_config", {})
+        sample_size = self.config["evaluation"]["sample_size"]
+        prompts = self.EVALUATION_PROMPTS
 
-(define cognitive-schematic-{i}
-  (lambda (context goal)
-    (let ((attention-value (get-sti context)))
-      (if (> attention-value 0.5)
-          (execute-procedure goal)
-          (increase-attention context)))))
+        samples = []
+        for i in range(sample_size):
+            prompt = prompts[i % len(prompts)]
+            completion = model.generate(
+                prompt,
+                max_new_tokens=gen_cfg.get("max_new_tokens", 200),
+                temperature=gen_cfg.get("temperature", 0.8),
+                top_k=gen_cfg.get("top_k", 40),
+            )
+            samples.append(f"{prompt}\n{completion}".strip())
 
-;; ECAN attention allocation
-(set-sti! (ConceptNode "important-concept-{i}") 0.7)
-(set-lti! (ConceptNode "memory-pattern-{i}") 0.6)
-"""
-                mock_samples.append(mock_response.strip())
-            
-            logger.info(f"Generated {len(mock_samples)} evaluation samples")
-            return mock_samples
-            
-        except Exception as e:
-            logger.error(f"Error generating evaluation samples: {e}")
-            return []
+        logger.info(f"Generated {len(samples)} evaluation samples with {model.model_path}")
+        return samples
     
-    def _load_reference_corpus(self) -> List[str]:
-        """Load reference corpus for comparison."""
-        try:
-            corpus_path = os.path.join(self.config["paths"]["training_data"], "reference_corpus.txt")
-            
-            if os.path.exists(corpus_path):
-                with open(corpus_path, 'r', encoding='utf-8') as f:
-                    return [line.strip() for line in f if line.strip()]
-            else:
-                # Return mock reference corpus
-                return [
-                    "(ConceptNode \"basic-concept\")",
-                    "(ImplicationLink (stv 0.9 0.8) ...)",
-                    "(define example-function (lambda (x) ...))",
-                    "(set-sti! (ConceptNode \"example\") 0.5)"
-                ]
-        except Exception as e:
-            logger.error(f"Error loading reference corpus: {e}")
-            return []
+    def _load_reference_corpus(self) -> Optional[List[str]]:
+        """Load the reference corpus for comparison, or None if there is none."""
+        corpus_path = os.path.join(self.config["paths"]["training_data"], "reference_corpus.txt")
+        if not os.path.exists(corpus_path):
+            logger.info(f"No reference corpus at {corpus_path}; emergent pattern comparison skipped")
+            return None
+        with open(corpus_path, 'r', encoding='utf-8') as f:
+            return [line.strip() for line in f if line.strip()]
     
-    def _get_atomspace_state(self) -> Dict[str, Any]:
-        """Get current AtomSpace state for evaluation."""
-        # Mock AtomSpace state - in real implementation, this would
-        # connect to actual AtomSpace instance
-        return {
-            "timestamp": datetime.now().isoformat(),
-            "atom_count": 15000,
-            "active_goals": [
-                {"name": "goal1", "sti": 0.8, "priority": 5},
-                {"name": "goal2", "sti": 0.6, "priority": 3}
-            ],
-            "attention_distribution": {
-                "high_sti_count": 150,
-                "medium_sti_count": 500,
-                "low_sti_count": 2000
-            },
-            "bottlenecks": [
-                {"type": "attention_concentration", "severity": "medium"},
-                {"type": "goal_proliferation", "severity": "low"}
-            ]
-        }
+    def _get_atomspace_state(self) -> Optional[Dict[str, Any]]:
+        """Get the live AtomSpace state if an endpoint is configured, else None."""
+        endpoint = self.config.get("atomspace", {}).get("endpoint")
+        if not endpoint:
+            logger.info("No AtomSpace endpoint configured; diagnostic alignment skipped")
+            return None
+        from introspection.atomspace_client import AtomSpaceClient
+        client = AtomSpaceClient(endpoint)
+        if not client.test_connection():
+            raise RuntimeError(f"AtomSpace at {endpoint} is unreachable")
+        state = client.get_cognitive_state_summary()
+        if "error" in state:
+            raise RuntimeError(f"AtomSpace state unavailable: {state['error']}")
+        return state
     
     def _save_evaluation_results(self, results: Dict[str, Any], cycle_number: int):
         """Save evaluation results to files."""
@@ -531,16 +516,24 @@ def main():
     parser.add_argument("--config", type=str, help="Path to configuration file")
     parser.add_argument("--daemon", action="store_true", help="Run as daemon")
     parser.add_argument("--single-cycle", action="store_true", help="Run single evaluation cycle")
+    parser.add_argument("--model_path", type=str, help="Path to the model checkpoint (ckpt.pt) to evaluate")
+    parser.add_argument("--device", type=str, default=None, help="Device to run the model on (cpu/cuda)")
     
     args = parser.parse_args()
     
     # Create evaluation loop
     eval_loop = AutomatedEvaluationLoop(args.config)
+    if args.model_path:
+        eval_loop.config["model"]["checkpoint_path"] = args.model_path
+    if args.device:
+        eval_loop.config["model"]["device"] = args.device
     
     if args.single_cycle:
         # Run single evaluation cycle
         logger.info("Running single evaluation cycle...")
-        eval_loop._run_evaluation_cycle(0)
+        if eval_loop._run_evaluation_cycle(0) is None:
+            logger.error("Single evaluation cycle did not produce results")
+            sys.exit(1)
         logger.info("Single evaluation cycle complete")
     else:
         # Set up signal handler for graceful shutdown

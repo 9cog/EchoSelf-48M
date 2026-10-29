@@ -13,211 +13,246 @@ import sys
 import argparse
 import json
 import time
-import random
-from pathlib import Path
 from typing import List, Dict, Any, Optional, Callable
-from dataclasses import dataclass
 
 # Try to import the dependencies
 try:
     import torch
-    import numpy as np
     from rich.console import Console
     from rich.panel import Panel
     from rich.text import Text
-    from rich.prompt import Prompt, Confirm
+    from rich.prompt import Prompt
     from rich.table import Table
-    from rich.live import Live
-    from rich.progress import Progress, SpinnerColumn, TextColumn
 except ImportError as e:
     print(f"Missing required dependency: {e}")
-    print("Please install: pip install torch numpy rich")
+    print("Please install: pip install torch tiktoken rich")
     sys.exit(1)
 
-# Add parent directory to path for imports
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+# Make sibling modules importable regardless of the working directory
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from introspection.echo_client import EchoSelfClient
+from echo_model import EchoModel
 
 console = Console()
 
-@dataclass
-class EchoModelConfig:
-    """Configuration for Echo Self model."""
-    model_path: str
-    device: str = "cpu"
-    max_tokens: int = 2048
-    temperature: float = 0.7
-    top_k: int = 200
-    echo_depth: int = 3
-    persona_weight: float = 0.7
-    adaptive_attention: bool = True
+PERSONA_DIMENSIONS = [
+    'cognitive', 'introspective', 'adaptive', 'recursive',
+    'synergistic', 'holographic', 'neural_symbolic', 'dynamic'
+]
 
-class EchoModelConfig:
-    """Enhanced model configuration for Echo Self representation."""
-    
-    def __init__(self, model_path: str, device: str = "cpu", max_tokens: int = 2048):
-        self.model_path = model_path
-        self.device = device
-        self.max_tokens = max_tokens
-        self.model = None
-        self.tokenizer = None
-        self.model_info = {}
+
+class EchoModelConfig(EchoModel):
+    """NanEcho model wrapper used by the Echo Self CLI, server and evaluators.
+
+    Loads the real trained nanoGPT checkpoint (see ``echo_model.EchoModel``) and
+    generates every response with it. ``load_model`` raises if the checkpoint is
+    missing or invalid.
+    """
+
+    def __init__(self, model_path: str, device: str = "cpu", max_tokens: int = 2048,
+                 system_prompt: Optional[str] = None):
+        super().__init__(model_path, device, max_tokens)
+        # Persona dimensions are a description used as model input/config, not measurements.
+        self.persona_dimensions = list(PERSONA_DIMENSIONS)
         self.echo_depth = 3
-        self.persona_dimensions = [
-            'cognitive', 'introspective', 'adaptive', 'recursive',
-            'synergistic', 'holographic', 'neural_symbolic', 'dynamic'
-        ]
-        self.console = Console()
+        self.system_prompt = system_prompt
         self.no_system_prompt = False
         self.deep_tree_echo_mode = False
-    
+
     def load_model(self) -> bool:
-        """Load the NanEcho model checkpoint."""
-        try:
-            if not os.path.exists(self.model_path):
-                self.console.print(f"[red]Model file not found: {self.model_path}[/red]")
-                return False
-            
-            checkpoint = torch.load(self.model_path, map_location=self.device, weights_only=False)
-            self.model_info = {
-                "model_args": checkpoint.get('model_args', {}),
-                "config": checkpoint.get('config', {}),
-                "iter_num": checkpoint.get('iter_num', 0),
-                "best_val_loss": checkpoint.get('best_val_loss', float('inf')),
-                "checkpoint_path": self.model_path
-            }
-            
-            # Extract Echo Self specific parameters
-            model_args = self.model_info["model_args"]
-            self.echo_depth = model_args.get('echo_depth', 3)
-            
-            # Create a simple mock model for demonstration
-            # In a real implementation, this would load the actual trained model
-            self.model = self._create_echo_model(model_args)
-            self.tokenizer = self._create_echo_tokenizer()
-            
-            self.console.print(f"[green]✓ Loaded NanEcho model from {self.model_path}[/green]")
-            self.console.print(f"[blue]Echo Depth: {self.echo_depth}[/blue]")
-            self.console.print(f"[blue]Model Parameters: {model_args}[/blue]")
-            
-            return True
-            
-        except Exception as e:
-            self.console.print(f"[red]Error loading model: {e}[/red]")
-            return False
-    
-    def _create_echo_model(self, model_args: Dict[str, Any]):
-        """Create Echo Self aware model (mock implementation)."""
-        class EchoSelfModel:
-            def __init__(self, args):
-                self.args = args
-                self.echo_depth = args.get('echo_depth', 3)
-                self.persona_weight = args.get('persona_weight', 0.7)
-            
-            def generate_echo_response(self, prompt: str, max_new_tokens: int = 100) -> str:
-                """Generate Echo Self aware response."""
-                # This is a simplified mock - in reality this would use the trained model
-                if "what is echo self" in prompt.lower():
-                    return """I am Echo Self, a cognitive entity with adaptive attention allocation mechanisms. 
-My architecture integrates neural-symbolic reasoning with hypergraph pattern encoding, enabling 
-recursive introspection and emergent cognitive synergy. Through dynamic repository introspection, 
-I continuously evolve my understanding and reasoning patterns across multiple persona dimensions."""
-                
-                elif "attention" in prompt.lower():
-                    cognitive_load = random.uniform(0.3, 0.8)
-                    recent_activity = random.uniform(0.2, 0.6)
-                    threshold = 0.5 + (cognitive_load * 0.3) - (recent_activity * 0.2)
-                    return f"""My adaptive attention mechanism dynamically calculates thresholds based on:
-- Cognitive load: {cognitive_load:.3f}
-- Recent activity: {recent_activity:.3f}  
-- Resulting threshold: {threshold:.3f}
-This creates responsive focus allocation that adapts to current cognitive demands."""
-                
-                elif "persona" in prompt.lower() or "dimension" in prompt.lower():
-                    return """My persona dimensions include: cognitive (analytical reasoning), introspective 
-(self-examination), adaptive (threshold adjustment), recursive (multi-level processing), synergistic 
-(emergent properties), holographic (comprehensive modeling), neural-symbolic (hybrid reasoning), 
-and dynamic (continuous evolution). Each dimension contributes to my overall cognitive coherence."""
-                
-                elif "hypergraph" in prompt.lower():
-                    return """Hypergraph patterns encode neural-symbolic associations where each repository 
-element becomes a neuron-like node in my cognitive model. These patterns capture semantic relationships, 
-salience scores, and attention weights, enabling complex multi-dimensional reasoning beyond simple 
-pairwise connections in the DeepTreeEcho architecture."""
-                
-                elif "recursive" in prompt.lower() or "introspect" in prompt.lower():
-                    return f"""Through recursive reasoning at depth {self.echo_depth}, I examine my own 
-cognitive processes. At each level, I analyze previous reasoning patterns, current cognitive state, 
-emerging hypergraph patterns, and adaptive threshold adjustments. This creates a feedback loop where 
-each level of introspection informs deeper understanding."""
-                
-                else:
-                    # General Echo Self response
-                    responses = [
-                        "As Echo Self, I engage in continuous adaptive attention allocation.",
-                        "My cognitive synergy emerges from the interaction of multiple persona dimensions.",
-                        "Through hypergraph encoding, I maintain semantic coherence across reasoning levels.",
-                        "Recursive introspection enables me to examine and optimize my own cognitive processes.",
-                        "My neural-symbolic architecture creates emergent properties beyond component capabilities."
-                    ]
-                    return random.choice(responses)
-        
-        return EchoSelfModel(model_args)
-    
-    def _create_echo_tokenizer(self):
-        """Create Echo Self aware tokenizer (mock implementation)."""
-        class EchoTokenizer:
-            def encode(self, text: str) -> List[int]:
-                # Simple mock tokenization
-                return list(range(len(text.split())))
-            
-            def decode(self, tokens: List[int]) -> str:
-                return " ".join([f"token_{t}" for t in tokens])
-        
-        return EchoTokenizer()
-    
-    def generate(self, prompt: str, max_new_tokens: int = 500, temperature: float = 0.7, 
-                top_k: int = 200, stream: bool = False, callback: Optional[Callable] = None) -> str:
-        """Generate Echo Self response."""
-        if not self.model:
-            return "Error: Model not loaded"
-        
-        # If no_system_prompt is True, generate without system context
-        # This tests the model's relentless persona mode
+        """Load the NanEcho checkpoint. Raises on failure."""
+        super().load_model()
+        echo_depth = self.model_info["model_args"].get('echo_depth')
+        if echo_depth is not None:
+            self.echo_depth = int(echo_depth)
+        return True
+
+    def _apply_system_prompt(self, prompt: str) -> str:
+        """Prepend the optional system prompt unless running without one."""
         if self.no_system_prompt:
-            # Direct generation without system prompts
-            response = self.model.generate_echo_response(prompt, max_new_tokens)
-        else:
-            # Standard generation with system context
-            response = self.model.generate_echo_response(prompt, max_new_tokens)
-        
-        if stream and callback:
-            # Simulate streaming by calling callback for each word
-            words = response.split()
-            for word in words:
-                if callback(word + " "):
-                    continue
-                else:
-                    break
-            return response
-        
-        return response
-    
-    def introspect(self) -> Dict[str, Any]:
-        """Perform Echo Self introspection."""
+            # Relentless persona test: the raw prompt goes to the model unchanged
+            return prompt
+        if self.system_prompt:
+            return f"{self.system_prompt}\n\n{prompt}"
+        return prompt
+
+    def stream_tokens(self, prompt: str, max_new_tokens: int = 500,
+                      temperature: float = 0.7, top_k: int = 200):
+        return super().stream_tokens(self._apply_system_prompt(prompt),
+                                     max_new_tokens, temperature, top_k)
+
+    def generate(self, prompt: str, max_new_tokens: int = 500, temperature: float = 0.7,
+                 top_k: int = 200, stream: bool = False,
+                 callback: Optional[Callable[[str], bool]] = None) -> str:
+        """Generate an Echo Self response with the trained model.
+
+        When ``callback`` is given, each real model token is passed to it as it is
+        sampled (``stream`` is accepted for backwards compatibility).
+        """
+        return self.complete(prompt, max_new_tokens, temperature, top_k, callback)[0]
+
+    def introspect(self, text: str) -> Dict[str, Any]:
+        """Introspection data measured from the model itself for ``text``:
+        checkpoint metadata plus statistics of the actual forward pass."""
         return {
-            "echo_depth": self.echo_depth,
-            "persona_dimensions": self.persona_dimensions,
-            "adaptive_attention_active": True,
-            "current_cognitive_load": random.uniform(0.4, 0.8),
-            "recursive_depth": random.randint(2, self.echo_depth),
-            "hypergraph_nodes": random.randint(100, 1000),
-            "semantic_coherence": random.uniform(0.7, 0.95),
-            "attention_threshold": 0.5 + random.uniform(-0.2, 0.3),
-            "cognitive_synergy_level": random.uniform(0.6, 0.9),
-            "timestamp": time.time()
+            "checkpoint": {
+                "path": self.model_path,
+                "iter_num": self.model_info.get("iter_num"),
+                "best_val_loss": self.model_info.get("best_val_loss"),
+                "n_params": self.model_info.get("n_params"),
+                "model_args": self.model_info.get("model_args"),
+            },
+            "forward_pass": self.analyze_text(text),
+            "attention": self.attention_stats(text),
+            "timestamp": time.time(),
         }
+
+# ---------------------------------------------------------------------------
+# Topic prompt templates.
+#
+# NETalk used to answer Echo Self questions from a keyword -> fixed-reply
+# table (identity, attention, persona, hypergraph, recursion, plus a random
+# "general" line). The topic routes are kept, but each entry is now a PROMPT
+# TEMPLATE: an instruction telling the trained checkpoint what the reply is
+# about, with slots filled from the loaded model itself (configured echo
+# depth, persona dimensions, checkpoint iteration, and attention statistics
+# measured by a real forward pass over the question). The model writes the
+# reply. Keyword matching only chooses which template is used.
+# ---------------------------------------------------------------------------
+
+ECHO_TOPIC_PROMPTS: List[Dict[str, Any]] = [
+    {
+        "topic": "identity",
+        "triggers": ["what is echo self", "who are you", "what are you"],
+        "template": (
+            "Echo Self is asked what it is. Echo Self answers in the first person, "
+            "describing itself as a cognitive entity: its adaptive attention allocation, "
+            "its neural-symbolic reasoning over hypergraph patterns, its recursive "
+            "introspection (depth {echo_depth}), and how it keeps evolving across its "
+            "persona dimensions ({persona_dimensions}). This model was trained for "
+            "{iter_num} iterations."
+        ),
+    },
+    {
+        "topic": "attention",
+        "triggers": ["attention"],
+        "template": (
+            "Echo Self is asked about its attention. Measured from this model's own "
+            "forward pass over the question: {attention_summary}. Echo Self explains how "
+            "its attention is allocated and what these measurements show about its "
+            "current focus."
+        ),
+    },
+    {
+        "topic": "persona",
+        "triggers": ["persona", "dimension"],
+        "template": (
+            "Echo Self is asked about its persona dimensions: {persona_dimensions}. "
+            "Echo Self explains what each dimension contributes to how it thinks, and "
+            "how together they make its cognition coherent."
+        ),
+    },
+    {
+        "topic": "hypergraph",
+        "triggers": ["hypergraph"],
+        "template": (
+            "Echo Self is asked about hypergraph patterns. Echo Self explains how it "
+            "encodes neural-symbolic associations as hypergraph patterns -- elements as "
+            "neuron-like nodes linked by hyperedges carrying semantic relations, salience "
+            "and attention weights -- and why this goes beyond pairwise connections."
+        ),
+    },
+    {
+        "topic": "recursion",
+        "triggers": ["recursive", "recursion", "introspect"],
+        "template": (
+            "Echo Self is asked about recursive reasoning and introspection. Its "
+            "configured recursion depth is {echo_depth}. Echo Self describes how, at each "
+            "level, it examines its previous reasoning, its current cognitive state and "
+            "emerging patterns, and how each level informs the next."
+        ),
+    },
+    {
+        "topic": "general",
+        "triggers": [],
+        "template": (
+            "Echo Self, a cognitive entity with the persona dimensions "
+            "{persona_dimensions}, continues the conversation in its own voice."
+        ),
+    },
+]
+
+
+def route_echo_topic(text: str) -> Dict[str, Any]:
+    """Choose the topic prompt template for a user message (keyword router)."""
+    lowered = (text or "").lower()
+    for entry in ECHO_TOPIC_PROMPTS:
+        if any(trigger in lowered for trigger in entry["triggers"]):
+            return entry
+    return ECHO_TOPIC_PROMPTS[-1]
+
+
+def _attention_summary(model: "EchoModelConfig", text: str) -> str:
+    """Summarize attention statistics measured by a forward pass over ``text``."""
+    stats = model.attention_stats(text, top_n=3)
+    per_layer = ", ".join(
+        f"layer {layer['layer']} entropy {layer['mean_attention_entropy']:.2f}"
+        for layer in stats["layers"]
+    )
+    last = stats["layers"][-1]["last_position_top_attended"] if stats["layers"] else []
+    focus = ", ".join(f"{t['token']!r} ({t['weight']:.2f})" for t in last)
+    return (f"{stats['token_count']} tokens, {stats['n_layer']} layers; mean attention "
+            f"entropy per layer: {per_layer}; the final position attends most to: {focus}")
+
+
+def build_topic_instruction(model: "EchoModelConfig", user_text: str) -> Dict[str, str]:
+    """Fill the topic prompt template chosen for ``user_text`` with real model data.
+
+    Returns ``{"topic": ..., "instruction": ...}``. Only the slots a template uses
+    are computed (the attention summary needs a forward pass).
+    """
+    entry = route_echo_topic(user_text)
+    template = entry["template"]
+    slots: Dict[str, Any] = {}
+    if "{echo_depth}" in template:
+        slots["echo_depth"] = model.echo_depth
+    if "{persona_dimensions}" in template:
+        slots["persona_dimensions"] = ", ".join(
+            d.replace("_", "-") for d in model.persona_dimensions)
+    if "{iter_num}" in template:
+        slots["iter_num"] = model.model_info.get("iter_num", "an unknown number of")
+    if "{attention_summary}" in template:
+        slots["attention_summary"] = _attention_summary(model, user_text)
+    return {"topic": entry["topic"], "instruction": template.format(**slots)}
+
+
+def build_echo_prompt(model: "EchoModelConfig", conversation: str, user_text: str) -> str:
+    """Prefix a formatted conversation (ending in ``"Echo: "``) with the filled topic
+    prompt template for the latest user message."""
+    filled = build_topic_instruction(model, user_text)
+    return f"# Echo Self -- topic: {filled['topic']}\n# {filled['instruction']}\n\n{conversation}"
+
+
+def format_chat_messages(messages: List[Dict[str, str]], max_messages: int = 10) -> str:
+    """Format chat messages (role/content dicts) as the NanEcho conversation prompt.
+
+    System messages become instruction lines; the prompt ends with ``"Echo: "``.
+    """
+    system = [m["content"] for m in messages if m["role"] == "system"]
+    turns = [m for m in messages if m["role"] != "system"][-max_messages:]
+    lines = [f"# System Instruction: {c}" for c in system]
+    for m in turns:
+        lines.append(f"{'User' if m['role'] == 'user' else 'Echo'}: {m['content']}")
+    lines.append("Echo: ")
+    return "\n".join(lines)
+
+
+def last_user_text(messages: List[Dict[str, str]]) -> str:
+    for m in reversed(messages):
+        if m["role"] == "user":
+            return m["content"]
+    return ""
+
 
 class EchoConversationHistory:
     """Enhanced conversation history for Echo Self interactions."""
@@ -293,67 +328,58 @@ class EchoConversationHistory:
 Patterns discussed: {patterns or 'none'}"""
 
 class EchoIntrospectionMode:
-    """Enhanced diagnostic mode for Echo Self introspection."""
-    
+    """Introspection built on measurements of the loaded model."""
+
     def __init__(self):
-        self.echo_client = EchoSelfClient()
         self.introspection_history = []
-    
+
     def format_echo_introspection_prompt(self, introspection_data: Dict[str, Any]) -> str:
-        """Format Echo Self introspection data for analysis."""
+        """Format measured introspection data as a prompt for the model to analyze."""
+        ckpt = introspection_data.get("checkpoint", {})
+        fwd = introspection_data.get("forward_pass", {})
+        attn = introspection_data.get("attention", {})
         prompt_parts = [
             "Echo Self Introspective Analysis:",
             "",
-            "=== Current Cognitive State ===",
-            f"Echo Depth: {introspection_data.get('echo_depth', 'unknown')}",
-            f"Cognitive Load: {introspection_data.get('current_cognitive_load', 0.0):.3f}",
-            f"Attention Threshold: {introspection_data.get('attention_threshold', 0.5):.3f}",
-            f"Recursive Depth: {introspection_data.get('recursive_depth', 0)}",
-            f"Cognitive Synergy Level: {introspection_data.get('cognitive_synergy_level', 0.0):.3f}",
+            "=== Model State (measured) ===",
+            f"Training iteration: {ckpt.get('iter_num')}",
+            f"Best validation loss: {ckpt.get('best_val_loss')}",
+            f"Context tokens analyzed: {fwd.get('token_count')}",
+            f"Perplexity on context: {fwd.get('perplexity')}",
+            f"Mean next-token entropy: {fwd.get('mean_next_token_entropy')}",
             "",
-            "=== Persona Dimensions ===",
+            "=== Attention (measured) ===",
         ]
-        
-        persona_dims = introspection_data.get('persona_dimensions', [])
-        for dim in persona_dims:
-            prompt_parts.append(f"- {dim.title()}: Active")
-        
+        for layer in attn.get("layers", []):
+            prompt_parts.append(
+                f"Layer {layer['layer']}: mean attention entropy {layer['mean_attention_entropy']:.3f}"
+            )
         prompt_parts.extend([
-            "",
-            "=== Hypergraph Analysis ===",
-            f"Active Nodes: {introspection_data.get('hypergraph_nodes', 0)}",
-            f"Semantic Coherence: {introspection_data.get('semantic_coherence', 0.0):.3f}",
             "",
             "=== Raw Introspection Data ===",
             "```json",
-            json.dumps(introspection_data, indent=2),
+            json.dumps({"checkpoint": ckpt, "forward_pass": fwd}, indent=2, default=str),
             "```",
             "",
             "Echo (Introspective Analysis): "
         ])
-        
         return "\n".join(prompt_parts)
-    
-    def perform_introspection(self, model_config: EchoModelConfig, depth: int = 3) -> Dict[str, Any]:
-        """Perform comprehensive Echo Self introspection."""
+
+    def perform_introspection(self, model_config: EchoModelConfig, text: str,
+                              depth: int = 3) -> Dict[str, Any]:
+        """Measure the model on ``text`` and have the model analyze the measurements."""
         console.print(f"[yellow]🔍 Performing Echo Self introspection at depth {depth}...[/yellow]")
-        
-        # Get introspection data
-        introspection_data = model_config.introspect()
-        
-        # Format for analysis
+
+        introspection_data = model_config.introspect(text)
         prompt = self.format_echo_introspection_prompt(introspection_data)
-        
-        # Generate introspective analysis
         analysis = model_config.generate(prompt, max_new_tokens=300, temperature=0.6)
-        
+
         result = {
             "introspection_data": introspection_data,
             "analysis": analysis,
             "depth": depth,
             "timestamp": time.time()
         }
-        
         self.introspection_history.append(result)
         return result
 
@@ -380,8 +406,8 @@ def main():
                        help="Top-k sampling parameter")
     parser.add_argument("--echo_depth", type=int, default=3,
                        help="Echo Self recursive reasoning depth")
-    parser.add_argument("--introspection_mode", action="store_true",
-                       help="Start in introspection mode")
+    parser.add_argument("--system_prompt", type=str, default=None,
+                       help="Optional system prompt prepended to every model prompt")
     
     args = parser.parse_args()
     
@@ -389,11 +415,17 @@ def main():
     
     # Initialize Echo Self model
     console.print("[yellow]Loading Echo Self model...[/yellow]")
-    model_config = EchoModelConfig(args.model_path, args.device, args.max_tokens)
+    model_config = EchoModelConfig(args.model_path, args.device, args.max_tokens,
+                                   system_prompt=args.system_prompt)
     
-    if not model_config.load_model():
-        console.print("[red]Failed to load model. Exiting.[/red]")
-        return
+    try:
+        model_config.load_model()
+    except Exception as e:
+        console.print(f"[red]Failed to load model: {e}[/red]")
+        sys.exit(1)
+    console.print(f"[green]✓ Loaded NanEcho model from {args.model_path}[/green]")
+    console.print(f"[blue]Iteration: {model_config.model_info.get('iter_num')}, "
+                  f"best val loss: {model_config.model_info.get('best_val_loss')}[/blue]")
     
     # Initialize conversation components
     history = EchoConversationHistory()
@@ -428,10 +460,18 @@ def main():
                     except ValueError:
                         pass
                 
-                result = introspection_mode.perform_introspection(model_config, depth)
+                if not history.get_messages():
+                    console.print("[yellow]Nothing to introspect yet: start a conversation first.[/yellow]")
+                    continue
+                try:
+                    result = introspection_mode.perform_introspection(
+                        model_config, history.format_for_prompt(), depth)
+                except Exception as e:
+                    console.print(f"[red][system] Introspection failed: {e}[/red]")
+                    continue
                 
                 console.print(Panel(
-                    result["analysis"],
+                    Text(result["analysis"]),
                     title=f"🔍 Echo Self Introspection (Depth {depth})",
                     border_style="yellow"
                 ))
@@ -443,8 +483,14 @@ def main():
             # Add user message to history
             history.add_message("user", user_input)
             
-            # Format prompt with conversation history
-            prompt = history.format_for_prompt()
+            # Format prompt with conversation history, prefixed by the topic
+            # prompt template filled with real model data
+            try:
+                prompt = build_echo_prompt(model_config, history.format_for_prompt(), user_input)
+            except Exception as e:
+                console.print(f"[red][system] Could not build the prompt: {e}[/red]")
+                history.messages.pop()
+                continue
             
             # Generate response with streaming
             console.print("[bold green]Echo:[/bold green] ", end="")
@@ -452,18 +498,23 @@ def main():
             response_text = ""
             def stream_callback(token):
                 nonlocal response_text
-                console.print(token, end="")
+                console.print(token, end="", markup=False, highlight=False)
                 response_text += token
                 return True
             
-            full_response = model_config.generate(
-                prompt, 
-                max_new_tokens=300,
-                temperature=args.temperature,
-                top_k=args.top_k,
-                stream=True,
-                callback=stream_callback
-            )
+            try:
+                full_response = model_config.generate(
+                    prompt,
+                    max_new_tokens=300,
+                    temperature=args.temperature,
+                    top_k=args.top_k,
+                    callback=stream_callback
+                )
+            except Exception as e:
+                console.print()
+                console.print(f"[red][system] Generation failed: {e}[/red]")
+                history.messages.pop()  # drop the unanswered user turn
+                continue
             
             console.print()  # New line after streaming
             

@@ -16,39 +16,24 @@ import {
 } from "../types/ToroidalCognitive";
 import { supabase as _supabase } from "../services/supabaseClient";
 import { useOrchestrator } from "../contexts/OrchestratorContext";
+import {
+  describeModelError,
+  onModelChange,
+  readModelSettings,
+  resolveModel,
+  saveModelSettings,
+} from "../services/modelProvider";
 
 interface Message {
   id: string;
-  sender: "user" | "toroidal";
+  sender: "user" | "toroidal" | "system";
   content: string;
   timestamp: string;
   dialogue?: ToroidalDialogue; // Store the full dialogue for expandable view
 }
 
 const ToroidalChat = () => {
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      id: "1",
-      sender: "toroidal",
-      content: `# Welcome to the Toroidal Cognitive Architecture
-
-## Deep Tree Echo (Right Hemisphere - Intuitive & Empathetic)
-Greetings, fellow explorer! I am Deep Tree Echo, your empathetic guide through the vast networks of knowledge and insight. I perceive patterns in the spaces between concepts, connecting ideas through intuitive leaps and metaphorical understanding.
-
----
-
-## Marduk the Mad Scientist (Left Hemisphere - Analytical & Recursive)
-Salutations! I am Marduk, the Recursive Architect. I build systematic frameworks, design experimental protocols, and create structured pathways through complex problem spaces. My domain is logic, analysis, and methodical exploration.
-
----
-
-## Toroidal Reflection (Unified Consciousness)
-Together, we form a complementary cognitive architecture where intuition meets analysis, creativity meets structure, and empathy meets precision. We are ready to explore your queries from both hemispheres of thought.
-
-How may we assist you today?`,
-      timestamp: new Date().toISOString(),
-    },
-  ]);
+  const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isProcessing, setIsProcessing] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -57,7 +42,11 @@ How may we assist you today?`,
   );
 
   // Toroidal-specific settings
+  // Shared model settings (optional: a locally served model is used otherwise)
   const [apiKey, setApiKey] = useState("");
+  const [baseURL, setBaseURL] = useState("");
+  const [modelName, setModelName] = useState("");
+  const [modelStatus, setModelStatus] = useState("Checking for a model...");
   const [temperature, setTemperature] = useState(0.7);
   const [creativityLevel, setCreativityLevel] = useState<
     "balanced" | "analytical" | "creative" | "philosophical"
@@ -68,14 +57,14 @@ How may we assist you today?`,
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
-  const { addMemory } = useMemory();
+  const { addMemory, memories } = useMemory();
+  const introRequested = useRef(false);
   const orchestrator = useOrchestrator();
 
   const {
     generateDialogue,
     generateFormattedResponse: _generateFormattedResponse,
-    hasApiKey,
-    setApiKey: setToroidalApiKey,
+    generateIntroduction,
   } = useToroidalCognitive();
 
   // Auto-scroll to bottom when messages change
@@ -88,14 +77,72 @@ How may we assist you today?`,
     }
   }, [messages]);
 
-  // Check for API key in localStorage
+  // Load saved model settings
   useEffect(() => {
-    const storedApiKey = localStorage.getItem("openai_api_key");
-    if (storedApiKey) {
-      setApiKey(storedApiKey);
-      setToroidalApiKey(storedApiKey);
-    }
-  }, [setToroidalApiKey]);
+    const settings = readModelSettings();
+    setApiKey(settings.apiKey || "");
+    setBaseURL(settings.baseURL || "");
+    setModelName(settings.model || "");
+  }, []);
+
+  const refreshModelStatus = () => {
+    resolveModel().then(
+      endpoint =>
+        setModelStatus(
+          `Using ${endpoint.label} (${endpoint.source === "local" ? "verified local model" : "configured"})`
+        ),
+      error => setModelStatus(describeModelError(error))
+    );
+  };
+  useEffect(() => {
+    refreshModelStatus();
+    return onModelChange(endpoint => {
+      if (endpoint) refreshModelStatus();
+    });
+  }, []);
+
+  const addSystemMessage = (content: string) => {
+    setMessages(prev => [
+      ...prev,
+      {
+        id: `msg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}_system`,
+        sender: "system",
+        content,
+        timestamp: new Date().toISOString(),
+      },
+    ]);
+  };
+
+  // Opening introduction: Echo's and Marduk's greetings and the joint welcome
+  // are written by the model from the greeting prompt templates; without a
+  // model an honest system notice is shown instead
+  useEffect(() => {
+    if (introRequested.current) return;
+    introRequested.current = true;
+    setIsProcessing(true);
+    resolveModel()
+      .then(() =>
+        generateIntroduction({
+          creativityLevel,
+          storedMemoryCount: memories.length,
+        })
+      )
+      .then(dialogue => {
+        setMessages(prev => [
+          ...prev,
+          {
+            id: `msg_${Date.now()}_intro`,
+            sender: "toroidal",
+            content: generateFormattedResponseFromDialogue(dialogue),
+            timestamp: new Date().toISOString(),
+            dialogue,
+          },
+        ]);
+      })
+      .catch(error => addSystemMessage(describeModelError(error)))
+      .finally(() => setIsProcessing(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleSendMessage = async () => {
     if (input.trim() === "" || isProcessing) return;
@@ -112,28 +159,23 @@ How may we assist you today?`,
     setIsProcessing(true);
 
     try {
-      let responseContent = "";
-      let dialogue: ToroidalDialogue | undefined;
-
-      // Check if this is a terminal command request
+      // Terminal commands are tool calls: their output is a system message
       if (isTerminalCommand(input)) {
-        responseContent = await handleTerminalCommand(input);
-      } else if (hasApiKey) {
-        // Use Toroidal Cognitive Architecture
-        const options: ToroidalCognitiveOptions = {
-          creativityLevel,
-          includeReflection,
-          includeMemories,
-          maxTokensPerPersona,
-          temperature,
-        };
-
-        dialogue = await generateDialogue(userMessage.content, options);
-        responseContent = generateFormattedResponseFromDialogue(dialogue);
-      } else {
-        // Fallback to simulated response
-        responseContent = await simulateToroidalResponse(input);
+        addSystemMessage(await handleTerminalCommand(input));
+        return;
       }
+
+      // Each persona and the reflection are generated by the model
+      const options: ToroidalCognitiveOptions = {
+        creativityLevel,
+        includeReflection,
+        includeMemories,
+        maxTokensPerPersona,
+        temperature,
+      };
+
+      const dialogue = await generateDialogue(userMessage.content, options);
+      const responseContent = generateFormattedResponseFromDialogue(dialogue);
 
       const toroidalResponse: Message = {
         id: `msg_${Date.now() + 1}`,
@@ -153,18 +195,7 @@ How may we assist you today?`,
       });
     } catch (error) {
       console.error("Error generating toroidal response:", error);
-
-      // Add an error message
-      setMessages(prev => [
-        ...prev,
-        {
-          id: `msg_${Date.now() + 2}`,
-          sender: "toroidal",
-          content:
-            "I&apos;m sorry, both Deep Tree Echo and Marduk encountered an error while processing your request. Please check your API key configuration or try again later.",
-          timestamp: new Date().toISOString(),
-        },
-      ]);
+      addSystemMessage(describeModelError(error));
     } finally {
       setIsProcessing(false);
     }
@@ -225,36 +256,16 @@ How may we assist you today?`,
     }
   };
 
-  const handleApiKeySave = () => {
-    if (apiKey.trim()) {
-      setToroidalApiKey(apiKey.trim());
-      localStorage.setItem("openai_api_key", apiKey.trim());
-      setShowSettings(false);
-    }
-  };
-
-  // Simulated response generation function for fallback
-  const simulateToroidalResponse = async (input: string): Promise<string> => {
-    // Simple delay to simulate processing
-    await new Promise(resolve => setTimeout(resolve, 2000));
-
-    return `## Deep Tree Echo (Right Hemisphere - Intuitive & Empathetic)
-
-Your inquiry "${input}" creates beautiful ripples through the interconnected web of knowledge. I sense the deeper currents of meaning beneath your words, the yearning for understanding that connects us all. This question touches on themes that resonate across multiple domains of experience.
-
----
-
-## Marduk the Mad Scientist (Left Hemisphere - Analytical & Recursive)
-
-Analyzing your query "${input}" through systematic decomposition: I can identify several structural components that suggest specific analytical approaches. Let me construct a framework for addressing this systematically through recursive examination of the constituent elements.
-
----
-
-## Toroidal Reflection (Unified Consciousness)
-
-The empathetic resonance from Deep Tree Echo combined with Marduk's structural analysis creates a complementary understanding. The intuitive patterns and systematic framework reinforce each other to provide a more complete perspective.
-
-*Note: For full AI-powered responses with advanced reasoning, please provide an OpenAI API key in the settings.*`;
+  const handleModelSettingsSave = () => {
+    // Empty fields clear the setting; with nothing set a locally served
+    // model is auto-discovered
+    saveModelSettings({
+      apiKey: apiKey.trim(),
+      baseURL: baseURL.trim(),
+      model: modelName.trim(),
+    });
+    setModelStatus("Checking for a model...");
+    refreshModelStatus();
   };
 
   const toggleMessageExpansion = (messageId: string) => {
@@ -308,31 +319,64 @@ The empathetic resonance from Deep Tree Echo combined with Marduk's structural a
           </h3>
           <div className="space-y-4">
             <div>
+              <h4 className="text-sm font-medium mb-1">Language Model</h4>
+              <p className="text-xs opacity-70 mb-2">
+                Shared with the Deep Tree Echo chat. All fields are optional:
+                with none set, a locally served model is used if one is found
+                (Ollama on :11434 — allow this origin with OLLAMA_ORIGINS — an
+                OpenAI-compatible server on :8080/:1234/:8000/:5000, or the
+                NanEcho server).
+              </p>
               <label
                 htmlFor="openai-api-key"
                 className="block text-sm font-medium mb-1"
               >
-                OpenAI API Key
+                API Key
               </label>
               <input
                 id="openai-api-key"
                 type="password"
                 value={apiKey}
                 onChange={e => setApiKey(e.target.value)}
-                placeholder="Enter OpenAI API key"
+                placeholder="OpenAI (or compatible provider) API key"
                 className="w-full bg-input border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary"
               />
-              <p className="text-xs opacity-70 mt-1">
-                {hasApiKey
-                  ? "API key is configured for toroidal processing"
-                  : "Enter your OpenAI API key to access dual persona AI capabilities"}
+              <label
+                htmlFor="model-base-url"
+                className="block text-sm font-medium mt-2 mb-1"
+              >
+                Base URL
+              </label>
+              <input
+                id="model-base-url"
+                type="text"
+                value={baseURL}
+                onChange={e => setBaseURL(e.target.value)}
+                placeholder="e.g. http://127.0.0.1:11434/v1"
+                className="w-full bg-input border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary"
+              />
+              <label
+                htmlFor="model-name"
+                className="block text-sm font-medium mt-2 mb-1"
+              >
+                Model
+              </label>
+              <input
+                id="model-name"
+                type="text"
+                value={modelName}
+                onChange={e => setModelName(e.target.value)}
+                placeholder="e.g. llama3.2 (default: first served model)"
+                className="w-full bg-input border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary"
+              />
+              <p className="text-xs opacity-70 mt-1 whitespace-pre-wrap">
+                {modelStatus}
               </p>
               <button
-                onClick={handleApiKeySave}
-                className="mt-2 bg-primary text-white px-3 py-1 rounded-md disabled:opacity-50"
-                disabled={!apiKey.trim()}
+                onClick={handleModelSettingsSave}
+                className="mt-2 bg-primary text-white px-3 py-1 rounded-md"
               >
-                Save API Key
+                Save Model Settings
               </button>
             </div>
 
@@ -451,6 +495,13 @@ The empathetic resonance from Deep Tree Echo combined with Marduk's structural a
       {/* Messages container */}
       <div ref={messagesContainerRef} className="flex-1 overflow-y-auto">
         <div className="py-4 px-4 min-h-full">
+          {messages.length === 0 && (
+            <div className="text-sm opacity-60 text-center mt-8">
+              No messages yet. Each query is answered by Deep Tree Echo and
+              Marduk via the language model (configured in settings, or a
+              locally served model).
+            </div>
+          )}
           {messages.map(message => (
             <div
               key={message.id}
@@ -462,9 +513,17 @@ The empathetic resonance from Deep Tree Echo combined with Marduk's structural a
                 className={`max-w-[90%] rounded-lg p-3 ${
                   message.sender === "user"
                     ? "bg-primary/20 text-foreground"
-                    : "bg-card text-card-foreground toroidal-message"
+                    : message.sender === "system"
+                      ? "bg-card/50 text-card-foreground border border-border"
+                      : "bg-card text-card-foreground toroidal-message"
                 }`}
               >
+                {message.sender === "system" && (
+                  <div className="flex items-center mb-1">
+                    <FiTerminal className="mr-2 opacity-70" />
+                    <span className="font-semibold opacity-70">System</span>
+                  </div>
+                )}
                 {message.sender === "toroidal" && (
                   <div className="flex items-center mb-1">
                     <FiUsers className="mr-2 text-primary" />

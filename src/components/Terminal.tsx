@@ -5,6 +5,13 @@ import { WebLinksAddon } from "xterm-addon-web-links";
 import { useAIChat, type AIModel } from "../services/aiChatService";
 import { supabase } from "../services/supabaseClient";
 import { setTerminalExecutionFunction } from "../contexts/OrchestratorContext";
+import { useMemory } from "../contexts/MemoryContext";
+import { useAppStore } from "../store/appStore";
+import {
+  describeModelError,
+  onModelChange,
+  resolveModel,
+} from "../services/modelProvider";
 import "xterm/css/xterm.css";
 
 const Terminal = () => {
@@ -23,6 +30,20 @@ const Terminal = () => {
   const [currentChat, setCurrentChat] = useState<string>("default");
   const [streamingResponse, setStreamingResponse] = useState<boolean>(false);
   const aiChat = useAIChat();
+  // Label of the resolved model, or null when none is (yet) verified
+  const [modelLabel, setModelLabel] = useState<string | null>(null);
+  // Ref for command handlers registered once with xterm
+  const modelLabelRef = useRef<string | null>(null);
+  modelLabelRef.current = modelLabel;
+
+  // Real stored memories and project files. Refs keep them current for the
+  // executor registered with the orchestrator at mount time.
+  const { memories } = useMemory();
+  const { files } = useAppStore();
+  const memoriesRef = useRef(memories);
+  memoriesRef.current = memories;
+  const filesRef = useRef(files);
+  filesRef.current = files;
 
   // Command autocomplete
   const [tabCompletions, setTabCompletions] = useState<string[]>([]);
@@ -47,26 +68,32 @@ const Terminal = () => {
   useEffect(() => {
     setTerminalMounted(true);
 
-    // Try to initialize AI Chat with stored API key
+    // Initialize AI Chat; the model is the configured one or a verified
+    // locally served model (resolved by modelProvider)
     const initializeAIChat = async () => {
-      const storedApiKey = localStorage.getItem("openai_api_key");
-      if (storedApiKey) {
-        try {
-          const { data } = await supabase.auth.getSession();
-          aiChat.initialize(storedApiKey, data.session?.user?.id);
-          aiChat.createChat(currentChat);
-        } catch (error) {
-          console.error("Error initializing AI Chat:", error);
-        }
+      try {
+        const { data } = await supabase.auth.getSession();
+        aiChat.initialize(undefined, data.session?.user?.id);
+      } catch (error) {
+        console.error("Error initializing AI Chat:", error);
       }
+      aiChat.createChat(currentChat);
     };
 
     initializeAIChat();
+    resolveModel().then(
+      endpoint => setModelLabel(endpoint.label),
+      () => setModelLabel(null)
+    );
+    const unsubscribeModel = onModelChange(endpoint =>
+      setModelLabel(endpoint ? endpoint.label : null)
+    );
 
     // Register the terminal execution function with the orchestrator
     setTerminalExecutionFunction(executeTerminalCommand);
 
     return () => {
+      unsubscribeModel();
       // Clean up terminal on unmount
       if (xtermRef.current) {
         xtermRef.current.dispose();
@@ -427,7 +454,7 @@ const Terminal = () => {
   // Function to be exposed to the orchestrator for external terminal command execution
   const executeTerminalCommand = async (command: string): Promise<string> => {
     if (!xtermRef.current) {
-      return "Terminal not initialized";
+      throw new Error("Terminal not initialized: command not executed");
     }
 
     // Capture the output in a string
@@ -513,13 +540,13 @@ const Terminal = () => {
         break;
       case "mkdir":
         term.write(
-          `mkdir: command simulated (would create directory: ${args[1] || ""})\r\n`
+          `mkdir: not executed (no filesystem executor in this browser terminal)\r\n`
         );
         writePrompt();
         break;
       case "touch":
         term.write(
-          `touch: command simulated (would create file: ${args[1] || ""})\r\n`
+          `touch: not executed (no filesystem executor in this browser terminal)\r\n`
         );
         writePrompt();
         break;
@@ -544,12 +571,15 @@ const Terminal = () => {
       { cmd: "help", desc: "Show this help" },
       { cmd: "clear", desc: "Clear the terminal" },
       { cmd: "echo [text]", desc: "Display text" },
-      { cmd: "ls [path]", desc: "List files (simulated)" },
+      { cmd: "ls", desc: "List project files" },
       { cmd: "pwd", desc: "Print working directory" },
       { cmd: "cd [path]", desc: "Change directory (simulated)" },
-      { cmd: "mkdir [dir]", desc: "Create directory (simulated)" },
-      { cmd: "touch [file]", desc: "Create file (simulated)" },
-      { cmd: "memory", desc: "Show memory system status" },
+      { cmd: "mkdir [dir]", desc: "Not available (no filesystem executor)" },
+      { cmd: "touch [file]", desc: "Not available (no filesystem executor)" },
+      {
+        cmd: "memory [list|clear]",
+        desc: "Memory status / list stored memories",
+      },
       {
         cmd: "aichat [message]",
         desc: "Chat with AI (use -h for more options)",
@@ -609,27 +639,31 @@ const Terminal = () => {
 
     if (args.length === 1) {
       // Just 'memory' command
-      if (aiChat.isInitialized()) {
-        term.write("Memory system active. Current status: operational\r\n");
-        term.write(`Current chat: \x1b[36m${currentChat}\x1b[0m\r\n`);
-        term.write(`AI integration: \x1b[32menabled\x1b[0m\r\n`);
-
-        // Show chat history statistics
-        const history = aiChat.getChatHistory(currentChat);
-        term.write(`Messages in current chat: ${history.length}\r\n`);
-      } else {
-        term.write("Memory system status: API key not configured\r\n");
-        term.write("Configure OpenAI API key to enable AI chat features\r\n");
-      }
+      term.write(`Current chat: \x1b[36m${currentChat}\x1b[0m\r\n`);
+      term.write(
+        modelLabelRef.current
+          ? `AI model: \x1b[32m${modelLabelRef.current}\x1b[0m\r\n`
+          : "AI model: not verified yet (configure one in Chat settings or serve a local model; checked on first use)\r\n"
+      );
+      // Show chat history statistics
+      const history = aiChat.getChatHistory(currentChat);
+      term.write(`Messages in current chat: ${history.length}\r\n`);
     } else if (args[1] === "clear") {
       aiChat.clearChat(currentChat);
       term.write(`Cleared chat history for "${currentChat}"\r\n`);
     } else if (args[1] === "list") {
-      // List memory (simulated)
-      term.write("Available memory records (simulated):\r\n");
-      term.write("  - Echo state memory block (active)\r\n");
-      term.write("  - Neural pattern storage (32 records)\r\n");
-      term.write("  - Hypergraph connections (128 nodes)\r\n");
+      // List the memories actually stored in the memory system
+      const stored = memoriesRef.current;
+      if (stored.length === 0) {
+        term.write("No memory records stored.\r\n");
+      } else {
+        term.write(`Stored memory records (${stored.length}):\r\n`);
+        stored.slice(-20).forEach(memory => {
+          term.write(
+            `  - ${memory.title} [${memory.tags.join(", ")}] (${new Date(memory.createdAt).toLocaleString()})\r\n`
+          );
+        });
+      }
     }
 
     writePrompt();
@@ -669,10 +703,21 @@ const Terminal = () => {
   const lsCommand = (_args: string[]) => {
     if (!xtermRef.current) return;
 
-    // Simulated directory listing
-    xtermRef.current.write(
-      "\x1b[1;34mdir1\x1b[0m  \x1b[1;34mdir2\x1b[0m  \x1b[1;34mnodes\x1b[0m  \x1b[1;32mfile.txt\x1b[0m  \x1b[1;32mREADME.md\x1b[0m\r\n"
-    );
+    // List the project files held in the app store
+    const projectFiles = filesRef.current;
+    if (projectFiles.length === 0) {
+      xtermRef.current.write("(no project files)\r\n");
+    } else {
+      xtermRef.current.write(
+        projectFiles
+          .map(file =>
+            file.type === "directory"
+              ? `\x1b[1;34m${file.name}\x1b[0m`
+              : `\x1b[1;32m${file.name}\x1b[0m`
+          )
+          .join("  ") + "\r\n"
+      );
+    }
     writePrompt();
   };
 
@@ -680,16 +725,6 @@ const Terminal = () => {
     if (!xtermRef.current) return;
 
     const term = xtermRef.current;
-
-    // If no API key, inform the user
-    if (!aiChat.isInitialized()) {
-      term.write(
-        "\x1b[33mAPI key not configured. AI chat features are disabled.\x1b[0m\r\n"
-      );
-      term.write("Configure OpenAI API key in Chat settings\r\n");
-      writePrompt();
-      return;
-    }
 
     if (args.length === 1) {
       // Just 'aichat' command without arguments
@@ -896,7 +931,7 @@ const Terminal = () => {
     } catch (error: unknown) {
       term.write("\r\x1b[K"); // Clear the "thinking" line
       term.write(
-        `\x1b[31mError: ${error instanceof Error ? error.message : "Unknown error"}\x1b[0m\r\n`
+        `\x1b[31m${describeModelError(error).replace(/\n/g, "\r\n")}\x1b[0m\r\n`
       );
     } finally {
       setStreamingResponse(false);
@@ -1012,10 +1047,12 @@ const Terminal = () => {
           )}
         </div>
         <div className="text-xs opacity-70">
-          {aiChat.isInitialized() ? (
-            <span className="text-green-400">AI Ready</span>
+          {modelLabel ? (
+            <span className="text-green-400" title={modelLabel}>
+              AI Ready
+            </span>
           ) : (
-            <span>AI Disabled</span>
+            <span>No model verified</span>
           )}
         </div>
       </div>

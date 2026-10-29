@@ -672,33 +672,6 @@ proper atomese.
 	(NumberNode (cog-name face-concept))
 )
 
-;; Randomly select a face out of the crowd.
-(DefineLink
-	(DefinedSchema "Select random face")
-	(RandomChoice (DefinedSchema "Get acknowledged faces")))
-
-;; Randomly glance at someone (who we are not currently making
-;; eye-contact with)
-(DefineLink
-	(DefinedPredicate "Select random glance target")
-	(SequentialAnd
-		; Recursive loop, keep picking, while the current glance target
-		; is the same as the current interaction target.
-		(TrueLink
-			(PutLink (StateLink glance-state (VariableNode "$face-id"))
-				(DefinedSchemaNode "Select random face")))
-		(EqualLink
-			(Get
-				(TypedVariable (Variable "$face-id") (Type "NumberNode"))
-				(StateLink glance-state (VariableNode "$face-id")))
-			(Get
-				(TypedVariable (Variable "$face-id") (Type "NumberNode"))
-				(StateLink eye-contact-state (VariableNode "$face-id")))
-		)
-		(DefinedPredicateNode "More than one face visible")
-		(DefinedPredicateNode "Select random glance target")
-	))
-
 ;; Update the room empty/full status; update the list of acknowledged
 ;; faces.
 (DefineLink
@@ -835,27 +808,18 @@ proper atomese.
 				(ListLink (Variable "$face-id")))
 		)))
 
-;; Select a face at random, and glance at it.
+;; The model picks some other face (not the eye-contact face), and
+;; Eva glances at it.  See face-choice.scm.
 (DefineLink
-	(DefinedPredicate "glance at random face")
-	(SequentialAnd
-		(DefinedPredicate "Select random glance target")
-		(Put
-			(DefinedPredicate "glance and ack")
-			(Get
-				(TypedVariable (Variable "$face-id") (Type "NumberNode"))
-				(State glance-state (Variable "$face-id")))
-		)
-	))
+	(DefinedPredicate "glance at other face")
+	(Evaluation (GroundedPredicate "scm: model-glance-at-face") (ListLink)))
 
-;; Glance at one of the newly-arrived faces.
-;; If more than one new arrival, pick one randomly.
+;; Glance at one of the newly-arrived faces; if more than one new
+;; arrival, the model picks which one.
 (DefineLink
-	(DefinedSchema "glance at new person")
-	(Put
-		(DefinedPredicate "glance and ack")
-		(RandomChoice (DefinedSchema "New arrivals"))
-	))
+	(DefinedPredicate "glance at new person")
+	(Evaluation (GroundedPredicate "scm: model-glance-at-new-person")
+		(ListLink)))
 
 
 (DefineLink
@@ -869,13 +833,11 @@ proper atomese.
 		)))
 
 ;; Glance at the last known location of a face that is no longer
-;; visible.
+;; visible; if several left, the model picks which one.
 (DefineLink
-	(DefinedSchema "glance at lost face")
-	(Put
-		(DefinedPredicate "glance at departure")
-		(RandomChoice (DefinedSchema "New departures"))
-	))
+	(DefinedPredicate "glance at lost face")
+	(Evaluation (GroundedPredicate "scm: model-glance-at-lost-face")
+		(ListLink)))
 
 ; ------------------------------------------------------
 
@@ -902,8 +864,9 @@ proper atomese.
 				;(ListLink (Variable "$face-id")))
 		)))
 
-;; Change the eye-contact target to a face picked randomly from the
-;; crowd. (Caution: this might randomly pick the existing face...)
+;; Change the eye-contact target to a face picked by the model from
+;; the crowd (it may keep the existing face).  On model failure this
+;; is false, and the current target is kept.
 ;;
 ;; This only sets the eye-contact state variable; this does NOT
 ;; actually cause the robot to look at them.  Use the schema
@@ -911,10 +874,9 @@ proper atomese.
 (DefineLink
 	(DefinedPredicate "Change interaction")
 	(SequentialAnd
-		; Pick a face at random...
-		(True (Put
-			(DefinedPredicate "Set interaction target")
-			(DefinedSchema "Select random face")))
+		; The model picks a face...
+		(Evaluation (GroundedPredicate "scm: model-change-interaction")
+			(ListLink))
 
 		; Diagnostic print
 		(Evaluation (GroundedPredicate "scm: print-msg-face")
@@ -929,13 +891,13 @@ proper atomese.
 (DefineLink
 	(DefinedPredicate "interact with new person")
 	; XXX Double-check that the "New arrivals" list is non-empty;
-	; some OpenPsi bug sometimes sends us here, and the RandomChoice
-	; crashes if the list is empty.
+	; some OpenPsi bug sometimes sends us here.
 	(SequentialAnd
 		(DefinedPredicateNode "Did someone arrive?")
-		(True (Put (DefinedPredicate "Set interaction target")
-			; If more than one new arrival, pick one randomly.
-			(RandomChoice (DefinedSchema "New arrivals")))))
+		; If more than one new arrival, the model picks one. False
+		; (and no new target) if the model fails.
+		(Evaluation (GroundedPredicate "scm: model-interact-with-new-person")
+			(ListLink)))
 )
 
 ;; Set eye-contact face to the requested face.
@@ -960,20 +922,32 @@ proper atomese.
 (define-public current-demo-mode (Anchor "Current Demo Mode"))
 (define default-mode (Concept "Default Mode"))
 (define reasoning-mode (Concept "Reasoning Mode"))
-(define philosophy-mode (Concept "Philosophy Mode"))
 (define saliency-mode (Concept "Saliency Mode"))
 
 (State current-demo-mode default-mode)
+
+; psi-controlled rules that are never given a non-zero weight in any
+; mode, because they voice sentences that do not come from a language
+; model: the aiml rule answers from a scripted AIML corpus, the
+; random_sentence_* rules sample canned corpus sentences, and the
+; external chatbot-psi select_pln_answer rule speaks PLN/SuReal
+; generated sentences directly.
+(define rules-never-enabled
+	(map (lambda (s) (string-append psi-prefix-str s))
+		(list "aiml" "random_sentence_blogs" "random_sentence_pkd"
+			"random_sentence_kurzweil" "select_pln_answer")))
 
 ;----------
 (define-public (enable-all-demos)
 "
   This is the default mode. All the rules are given a weight of 0.9.
 "
-	; Turn these off by default
+	; Turn these off by default: the never-enabled speech rules (see
+	; `rules-never-enabled`) plus saliency-tracking, which has its own
+	; demo mode.
 	(define rules-not-to-be-enabled
-		(map (lambda (s) (string-append psi-prefix-str s))
-		(list "aiml" "random_sentence_blogs" "saliency-tracking")))
+		(cons (string-append psi-prefix-str "saliency-tracking")
+			rules-never-enabled))
 
 	(psi-controller-occupy)
 
@@ -998,10 +972,12 @@ proper atomese.
 
 	(for-each
 		(lambda (r)
-			(if (member (cog-name (car (psi-rule-alias r))) rules-to-be-enabled)
-				(psi-rule-set-atomese-weight r 0.9)
-				(psi-rule-set-atomese-weight r 0.0)
-			))
+			(let ((alias (cog-name (car (psi-rule-alias r)))))
+				(if (and (member alias rules-to-be-enabled)
+						(not (member alias rules-never-enabled)))
+					(psi-rule-set-atomese-weight r 0.9)
+					(psi-rule-set-atomese-weight r 0.0)
+				)))
 		(psi-get-controlled-rules)
 	)
 
@@ -1032,18 +1008,17 @@ proper atomese.
 	(enable-demo-rules (list "saliency-tracking"))
 )
 
-(define-public (enable-philosophy-demo)
-"
-  Enables the random_sentence_pkd and random_sentence_blogs rules.
-"
-	(enable-demo-rules (list "random_sentence_pkd" "random_sentence_kurzweil"))
-)
-
 (define-public (enable-pln-demo)
 "
-  Enables the openpsi-pln rule.
+  Reasoning demo.  The external chatbot-psi select_pln_answer rule is
+  NOT enabled: it would voice PLN/SuReal sentences that no language
+  model wrote (see `rules-never-enabled`).  There is no hook in this
+  repository to read that rule's PLN results, so they cannot be passed
+  as {facts} into Eva's interrogative-answered prompt template either.
+  The reasoning mode therefore keeps the default, model-backed rule
+  weights; select_pln_answer stays at weight 0.
 "
-	(enable-demo-rules (list "select_pln_answer"))
+	(enable-all-demos)
 )
 
 ; For debugging
@@ -1073,10 +1048,6 @@ proper atomese.
 		((equal? m "reasoning-demo")
 			(enable-pln-demo)
 			(State current-demo-mode reasoning-mode)
-		)
-		((equal? m "philosophy-demo")
-			(enable-philosophy-demo)
-			(State current-demo-mode philosophy-mode)
 		)
 		((equal? m "saliency-demo")
 			(enable-saliency-demo)

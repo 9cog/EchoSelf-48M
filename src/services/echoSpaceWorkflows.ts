@@ -16,6 +16,7 @@ import { Mem0rySearchResult } from "../types/Mem0AI";
 
 import { EchoSpaceService } from "./echoSpaceService";
 import Mem0AIService from "./mem0aiService";
+import MardukScientistService from "./mardukScientistService";
 
 export interface WorkflowContext {
   agentNamespace: string;
@@ -218,68 +219,94 @@ export class SandboxWorkflow {
     }
   }
 
+  /**
+   * The sandbox assessment is produced by the model speaking as Marduk. The
+   * model's structured JSON verdict is parsed; nothing is randomized or
+   * filled in locally. If the model is unavailable or returns unusable
+   * output, the error propagates.
+   */
   private createSandboxEnvironment(arenaId: string) {
     return {
       async test(
         hypothesis: string,
         virtualAgentId?: string
       ): Promise<SimulationResult> {
-        // Simulate hypothesis testing with realistic outcomes
-        const simulationDuration = Math.random() * 2000 + 500; // 0.5-2.5 seconds
+        const start = Date.now();
+        const prompt = `You are Virtual Marduk agent "${virtualAgentId || "virtual"}" running a thought-experiment sandbox in arena "${arenaId}".
+Assess this hypothesis:
+"${hypothesis}"
 
-        await new Promise(resolve => setTimeout(resolve, simulationDuration));
+Reply with ONLY a JSON object of this shape:
+{"success": boolean, "outcome": string, "confidence": number between 0 and 1, "observations": string[], "recommendations": string[], "riskLevel": "low" | "medium" | "high" | "critical", "riskFactors": string[]}`;
 
-        // Generate realistic simulation results
-        const success = Math.random() > 0.3; // 70% success rate
-        const confidence = 0.6 + Math.random() * 0.4; // 0.6-1.0 confidence
-
-        const observations = [
-          `Simulated ${hypothesis} in arena ${arenaId}`,
-          `Agent ${virtualAgentId || "virtual"} performed ${success ? "successfully" : "with issues"}`,
-          `Confidence level: ${confidence.toFixed(2)}`,
-          `Simulation duration: ${simulationDuration.toFixed(0)}ms`,
-        ];
-
-        const recommendations = success
-          ? [
-              "Hypothesis validated in sandbox",
-              "Consider real-world implementation",
-              "Monitor for edge cases",
-            ]
-          : [
-              "Hypothesis requires modification",
-              "Identify failure points",
-              "Consider alternative approaches",
-            ];
-
-        const riskLevel: SimulationResult["riskAssessment"]["level"] = success
-          ? confidence > 0.8
-            ? "low"
-            : "medium"
-          : "high";
+        const raw = await MardukScientistService.getInstance().generateResponse(
+          prompt,
+          { architecturalMode: "system", temperature: 0.4, template: false }
+        );
+        const assessment = parseSandboxAssessment(raw);
 
         return {
-          success,
-          outcome: success
-            ? "Hypothesis validated"
-            : "Hypothesis failed validation",
+          success: assessment.success,
+          outcome: assessment.outcome,
           metrics: {
-            confidence,
-            executionTime: simulationDuration,
-            resourceUsage: Math.random() * 100,
+            confidence: assessment.confidence,
+            executionTime: Date.now() - start,
           },
-          observations,
-          recommendations,
+          observations: assessment.observations,
+          recommendations: assessment.recommendations,
           riskAssessment: {
-            level: riskLevel,
-            factors: success
-              ? ["Low complexity", "High confidence"]
-              : ["Failed validation", "Requires revision"],
+            level: assessment.riskLevel,
+            factors: assessment.riskFactors,
           },
         };
       },
     };
   }
+}
+
+const RISK_LEVELS = ["low", "medium", "high", "critical"] as const;
+
+/** Parse and validate the model's JSON sandbox assessment. */
+function parseSandboxAssessment(raw: string): {
+  success: boolean;
+  outcome: string;
+  confidence: number;
+  observations: string[];
+  recommendations: string[];
+  riskLevel: SimulationResult["riskAssessment"]["level"];
+  riskFactors: string[];
+} {
+  const start = raw.indexOf("{");
+  const end = raw.lastIndexOf("}");
+  if (start === -1 || end <= start) {
+    throw new Error("Model did not return a JSON sandbox assessment");
+  }
+  const data = JSON.parse(raw.slice(start, end + 1)) as Record<string, unknown>;
+
+  const strings = (value: unknown): string[] =>
+    Array.isArray(value) ? value.map(String) : [];
+
+  if (typeof data.success !== "boolean" || typeof data.outcome !== "string") {
+    throw new Error("Model sandbox assessment is missing success/outcome");
+  }
+  const confidence = Number(data.confidence);
+  if (!Number.isFinite(confidence)) {
+    throw new Error("Model sandbox assessment is missing confidence");
+  }
+  const riskLevel = RISK_LEVELS.find(level => level === data.riskLevel);
+  if (!riskLevel) {
+    throw new Error("Model sandbox assessment has an invalid riskLevel");
+  }
+
+  return {
+    success: data.success,
+    outcome: data.outcome,
+    confidence: Math.max(0, Math.min(1, confidence)),
+    observations: strings(data.observations),
+    recommendations: strings(data.recommendations),
+    riskLevel,
+    riskFactors: strings(data.riskFactors),
+  };
 }
 
 /**
@@ -393,18 +420,41 @@ export class ConsensusWorkflow {
     );
 
     try {
-      // Aggregate results from simulations
-      const votes: ConsensusVote[] = context.simulationResults.map(
-        simulation => ({
+      // Aggregate results from simulations. Only simulations the model has
+      // actually assessed, with a model-reported confidence, can vote; an
+      // unassessed simulation or a missing confidence is never given an
+      // invented value.
+      const votes: ConsensusVote[] = [];
+      const unassessed: string[] = [];
+      for (const simulation of context.simulationResults) {
+        const results = simulation.results;
+        const confidence = results?.metrics.confidence;
+        if (
+          !results ||
+          typeof confidence !== "number" ||
+          !Number.isFinite(confidence)
+        ) {
+          unassessed.push(simulation.virtualAgentId);
+          continue;
+        }
+        votes.push({
           virtualAgentId: simulation.virtualAgentId,
-          vote: simulation.results.success ? "approve" : "reject",
-          confidence: simulation.results.metrics.confidence || 0.5,
-          reasoning: simulation.results.outcome,
-          modifications: simulation.results.success
-            ? []
-            : simulation.results.recommendations,
-        })
-      );
+          vote: results.success ? "approve" : "reject",
+          confidence,
+          reasoning: results.outcome,
+          modifications: results.success ? [] : results.recommendations,
+        });
+      }
+      if (unassessed.length > 0) {
+        console.warn(
+          `Consensus Workflow: excluding ${unassessed.length} simulation(s) without a model assessment/confidence: ${unassessed.join(", ")}`
+        );
+      }
+      if (votes.length === 0) {
+        throw new Error(
+          "No simulation has a model-assessed result with a confidence value; consensus cannot be computed"
+        );
+      }
 
       const consensus = this.aggregateVotes(votes);
 
@@ -479,8 +529,12 @@ export class ConsensusWorkflow {
   }
 
   private deriveStrategy(simulations: SimulationRecord[]): string {
-    const successfulSimulations = simulations.filter(s => s.results.success);
-    const successRate = successfulSimulations.length / simulations.length;
+    const assessed = simulations.filter(s => s.results !== null);
+    if (assessed.length === 0) {
+      return "No assessed simulations";
+    }
+    const successfulSimulations = assessed.filter(s => s.results?.success);
+    const successRate = successfulSimulations.length / assessed.length;
 
     if (successRate > 0.8) {
       return "High confidence strategy: Proceed with implementation";
@@ -572,19 +626,10 @@ export class ActualMardukWorkflow {
   private async takeRealWorldAction(
     strategy: string
   ): Promise<{ actionTaken: string; outcome: string }> {
-    // Simulate real-world action execution
-    const actionDuration = Math.random() * 1000 + 2000; // 2-3 seconds
-
-    await new Promise(resolve => setTimeout(resolve, actionDuration));
-
-    const success = Math.random() > 0.2; // 80% success rate for real actions
-
-    return {
-      actionTaken: strategy,
-      outcome: success
-        ? "Strategy executed successfully in real-world environment"
-        : "Strategy execution encountered issues, requires adjustment",
-    };
+    // No real-world executor is wired up; never report a fabricated outcome
+    throw new Error(
+      `Real-world executor unavailable: strategy not executed ("${strategy}")`
+    );
   }
 }
 
@@ -668,7 +713,15 @@ export class EchoSpaceWorkflowOrchestrator {
         });
 
         if (!executionResult.success || !executionResult.result) {
-          throw new Error(`Execution failed: ${executionResult.error}`);
+          return {
+            success: false,
+            error: `Execution failed: ${executionResult.error}`,
+            metadata: {
+              simulations,
+              consensus,
+              consensusStatus: consensus.status,
+            },
+          };
         }
 
         const execution = executionResult.result;

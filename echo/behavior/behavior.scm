@@ -151,7 +151,7 @@
 		;; Look at the interaction face
 		(DefinedPredicate "look at person")
 
-		;; Show random expressions only if NOT talking
+		;; Show model expressions only if NOT talking
 		(SequentialOr
 			;(Not (DefinedPredicate "chatbot is listening?"))
 			(SequentialAnd
@@ -162,7 +162,7 @@
 				)
 				(SequentialOrLink
 					(NotLink (DefinedPredicateNode "Time to make gesture"))
-					(DefinedPredicateNode "Pick random positive gesture"))
+					(DefinedPredicateNode "Show positive gesture"))
 		))
 	))
 
@@ -176,15 +176,20 @@
 	(SequentialAnd
 		(DefinedPredicate "was room empty?")
 		; Record a new emotional state (for self-awareness)
-		; XXX FIXME this should be a part of "Show random expression"
+		; XXX FIXME this should be a part of "Show model expression"
 		; below ...
 		(Put (DefinedPredicate "Request Set Face Expression")
 			(ListLink bhv-source (Concept "new-arrival")))
 
 		(DefinedPredicate "interact with new person")
 		(DefinedPredicate "look at person")
-		(Put (DefinedPredicate "Show random expression")
+		(Put (DefinedPredicate "Show model expression")
 			(ConceptNode "new-arrival"))
+		; Greet the new arrival: the words come from the model, via the
+		; "greet-new-arrival" prompt template.  If the model fails, Eva
+		; says nothing (error logged) and the sequence continues.
+		(True (Evaluation (GroundedPredicate "scm: model-say-template")
+			(ListLink (Concept "greet-new-arrival"))))
 		(Put (DefinedPredicate "Publish behavior")
 			(Concept "Look at new arrival"))
 		(Evaluation (GroundedPredicate "scm: print-msg-face")
@@ -214,7 +219,7 @@
 	(SequentialAnd
 		(DefinedPredicate "Is interacting with someone?")
 		(DefinedPredicate "dice-roll: glance new face")
-		(True (DefinedSchema "glance at new person"))
+		(True (DefinedPredicate "glance at new person"))
 		(Evaluation (GroundedPredicate "scm: print-msg")
 			(ListLink (Node "--- Glance at new person")))
 	))
@@ -223,11 +228,11 @@
 (DefineLink
 	(DefinedPredicate "Interacting Sequence for recognized person")
 	(SequentialAnd
-		(True (Put ; Setting interaction target for "look at person"
-			(DefinedPredicate "Set interaction target")
-			(RandomChoice (Put; FIXME Replace by multiple face tracking.
-				(DefinedSchemaNode "Get recognized face's face id")
-				(DefinedSchema "Get recognized faces")))))
+		; Setting interaction target for "look at person": the model
+		; picks among the recognized faces; false if it fails.
+		(Evaluation
+			(GroundedPredicate "scm: model-interact-with-recognized-person")
+			(ListLink))
 		(DefinedPredicate "look at person")
 		;TODO: Separate out room-state into separate demands that occur before
 		; or after other demands are handled. How should order of execution
@@ -308,7 +313,7 @@
 				(DefinedPredicate "Is interacting with someone?")
 				(SequentialOr
 					(NotLink (DefinedPredicate "dice-roll: glance lost face"))
-					(FalseLink (DefinedSchema "glance at lost face"))
+					(FalseLink (DefinedPredicate "glance at lost face"))
 					(Evaluation (GroundedPredicate "scm: print-msg")
 						(ListLink (Node "--- Glance at lost face"))))
 				(TrueLink)
@@ -369,7 +374,7 @@
 					(SequentialAnd
 						(DefinedPredicate "More than one face visible")
 						(DefinedPredicate "dice-roll: group interaction")
-						(DefinedPredicate "glance at random face"))
+						(DefinedPredicate "glance at other face"))
 					(True))
 				(DefinedPredicateNode "Interact with face")
 				(SequentialOr
@@ -415,28 +420,26 @@
 			; rate-limit the message.
 			(False (Put (DefinedPredicate "Publish behavior")
 				(Concept "Searching for attention")))
-			(PutLink (DefinedPredicateNode "Show random expression")
+			(PutLink (DefinedPredicateNode "Show model expression")
 				(ConceptNode "bored"))
 		)
 		(SequentialOr
 			(Not (DefinedPredicate "Time to make gesture"))
-			(PutLink (DefinedPredicateNode "Show random gesture")
+			(PutLink (DefinedPredicateNode "Show model gesture")
 				(ConceptNode "bored")))
 
 		;; Search for attention -- change gaze every so often.
 		;; Coordinate system: x forward; y side-to-side, z up.
+		;; The model picks the direction within the configured gaze
+		;; bounds; on failure the gaze is kept. The timestamp is set
+		;; either way, so that failures are not retried every tick.
 		;; XXX question: This is turning the whole head; perhaps we
 		;; should be moving eyes only?
 		(SequentialOr
 			(Not (DefinedPredicate "Time to change gaze"))
 			(SequentialAnd
-				(Evaluation (DefinedPredicate "Look at point")
-					(ListLink ;; three numbers: x,y,z
-						(Number 1)
-						(RandomNumber
-							(DefinedSchema "gaze right max")
-							(DefinedSchema "gaze left max"))
-						(Number 0)))
+				(True (Evaluation (GroundedPredicate "scm: model-search-gaze")
+					(ListLink)))
 				(True (DefinedSchema "set attn-search timestamp"))
 			))
 	))
@@ -534,11 +537,11 @@
 	(SequentialAnd
 		; Switch to face-study saccade ...
 		(DefinedPredicate "Conversational Saccade")
-		; ... and show one random gesture from "conversing" set.
-		(Put (DefinedPredicate "Show random gesture")
+		; ... and a model-chosen gesture from the "conversing" set.
+		(Put (DefinedPredicate "Show model gesture")
 			(ConceptNode "conversing"))
 		; ... and also, sometimes, the "chatbot_positive_nod"
-		(Put (DefinedPredicate "Show random gesture")
+		(Put (DefinedPredicate "Show model gesture")
 			(ConceptNode "chat-positive-nod"))
 		; ... and switch state to "talking"
 		(True (Put (State chat-state (Variable "$x")) chat-talk))
@@ -555,11 +558,11 @@
 	(SequentialAnd
 		; Switch to face-study saccade ...
 		(DefinedPredicate "Listening Saccade")
-		; ... and show one random gesture from "conversing" set.
-		(Put (DefinedPredicate "Show random gesture")
+		; ... and a model-chosen gesture from the "conversing" set.
+		(Put (DefinedPredicate "Show model gesture")
 			(ConceptNode "listening"))
 		; ... and also, sometimes, the "chatbot_positive_nod"
-		(Put (DefinedPredicate "Show random gesture")
+		(Put (DefinedPredicate "Show model gesture")
 			(ConceptNode "chat-positive-nod"))
 		; ... and switch state to "listen"
 		(True (Put (State chat-state (Variable "$x")) chat-listen))
@@ -581,18 +584,18 @@
 				; ... show one of the neutral-speech expressions
 				(SequentialOr
 					(Not (DefinedPredicate "Time to change expression"))
-					(Put (DefinedPredicateNode "Show random expression")
+					(Put (DefinedPredicateNode "Show model expression")
 						(ConceptNode "neutral-speech")))
 
 				; ... nod slowly ...
 				(SequentialOr
 					(Not (DefinedPredicate "Time to make gesture"))
 					(SequentialAnd
-						(Put (DefinedPredicate "Show random gesture")
+						(Put (DefinedPredicate "Show model gesture")
 							(ConceptNode "chat-positive-nod"))
 
 						; ... raise eyebrows ...
-						(Put (DefinedPredicate "Show random gesture")
+						(Put (DefinedPredicate "Show model gesture")
 							(ConceptNode "chat-pos-think"))
 
 						; ... switch to chat fast blink rate...
@@ -608,16 +611,16 @@
 				; ... show one of the frustrated expressions
 				(SequentialOr
 					(Not (DefinedPredicate "Time to change expression"))
-					(Put (DefinedPredicateNode "Show random expression")
+					(Put (DefinedPredicateNode "Show model expression")
 						(ConceptNode "frustrated")))
 				(SequentialOr
 					(Not (DefinedPredicate "Time to make gesture"))
 					(SequentialAnd
 						; ... shake head quickly ...
-						(Put (DefinedPredicate "Show random gesture")
+						(Put (DefinedPredicate "Show model gesture")
 							(ConceptNode "chat-negative-shake"))
 						; ... furrow brows ...
-						(Put (DefinedPredicate "Show random gesture")
+						(Put (DefinedPredicate "Show model gesture")
 							(ConceptNode "chat-neg-think"))
 						; ... switch to chat slow blink rate...
 						(Evaluation (DefinedPredicate "Blink rate")
@@ -676,18 +679,18 @@
 		; Show one of the neutral-speech expressions
 		(SequentialOr
 			(Not (DefinedPredicate "Time to change expression"))
-			(Put (DefinedPredicateNode "Show random expression")
+			(Put (DefinedPredicateNode "Show model expression")
 				(ConceptNode "neutral-listen")))
 
 		; ... nod slowly ...
 		(SequentialOr
 			(Not (DefinedPredicate "Time to make gesture"))
 			(SequentialAnd
-				(Put (DefinedPredicate "Show random gesture")
+				(Put (DefinedPredicate "Show model gesture")
 					(ConceptNode "chat-positive-nod"))
 
 				; ... raise eyebrows ...
-				(Put (DefinedPredicate "Show random gesture")
+				(Put (DefinedPredicate "Show model gesture")
 					(ConceptNode "chat-pos-think"))
 		))
 		(TrueLink)
@@ -699,28 +702,28 @@
 		; If the chatbot stopped talking ...
 		(SequentialOr
 			(Not (DefinedPredicate "Time to change expression"))
-			(Put (DefinedPredicateNode "Show random expression")
+			(Put (DefinedPredicateNode "Show model expression")
 				(ConceptNode "neutral-listen")))
 
 		; ... nod slowly ...
 		(SequentialOr
 			(Not (DefinedPredicate "Time to make gesture"))
 			(SequentialAnd
-				(Put (DefinedPredicate "Show random gesture")
+				(Put (DefinedPredicate "Show model gesture")
 					(ConceptNode "chat-positive-nod"))
 				; ... raise eyebrows ...
-				(Put (DefinedPredicate "Show random gesture")
+				(Put (DefinedPredicate "Show model gesture")
 					(ConceptNode "chat-pos-think"))
 		))
 		(TrueLink)
 	))
 
-;; Actions for loud sound
-;; XXX FIXME -- this should not be hard-coded here!
+;; Actions for loud sound: what Eva says is written by the model from
+;; the "loud-sound" prompt template (see eva-model/prompts.scm).
 (DefineLink
-	(DefinedPredicate "Say whoa!")
-		(Put (DefinedPredicate "Say")
-			(Node "whoa!")))
+	(DefinedPredicate "React to loud sound")
+	(Evaluation (GroundedPredicate "scm: model-say-template")
+		(ListLink (Concept "loud-sound"))))
 
 ;;Actions for various levels of sound
 (DefineLink
@@ -729,21 +732,21 @@
 
 		(SequentialAnd
 			(DefinedPredicate "very low sound?")
-			(Put (DefinedPredicateNode "Show random expression")
+			(Put (DefinedPredicateNode "Show model expression")
 				(ConceptNode "sound-happy"))
 			(Evaluation (GroundedPredicate "scm: print-msg")
 				(ListLink (Node "--- low sound"))))
 
 		(SequentialAnd
 			(DefinedPredicate "normal conversation?")
-			(Put (DefinedPredicateNode "Show random expression")
+			(Put (DefinedPredicateNode "Show model expression")
 				(ConceptNode "sound-amused"))
 			(Evaluation (GroundedPredicate "scm: print-msg")
 				(ListLink (Node "--- normal sound"))))
 
 		(SequentialAnd
 			(DefinedPredicate "Heard very loud sound?")
-			(Put (DefinedPredicateNode "Show random expression")
+			(Put (DefinedPredicateNode "Show model expression")
 				(ConceptNode "sound-afraid"))
 			(Evaluation (GroundedPredicate "scm: print-msg")
 				(ListLink (Node "--- very high sound"))))
@@ -753,7 +756,7 @@
 ; Salient-activity reactions -- look curious and look in that direction.
 (DefineLink
 	(DefinedPredicate "Curious")
-		(Put (DefinedPredicate "Show random gesture")
+		(Put (DefinedPredicate "Show model gesture")
 			(ConceptNode "salient-curious")))
 
 (DefineLink
@@ -770,7 +773,7 @@
 ; Room luminance (brightness) reactions - be happy in a bright room.
 (DefineLink
 	(DefinedPredicate "Bright:happy")
-	(Put (DefinedPredicateNode "Show random expression")
+	(Put (DefinedPredicateNode "Show model expression")
 		(ConceptNode "luminance-happy")))
 
 ; ----------------------------------------------------------------------

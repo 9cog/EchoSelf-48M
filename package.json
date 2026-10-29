@@ -26,6 +26,7 @@
     "framer-motion": "^12.15.0",
     "hnswlib-node": "^3.0.0",
     "isbot": "^4.1.0",
+    "localforage": "^1.10.0",
     "mermaid": "^11.9.0",
     "ml-distance": "^4.0.1",
     "ml-matrix": "^6.12.1",

@@ -522,6 +522,10 @@ class MotorController:
             # Would compute IK in real implementation
 
 
+class SensoryInputUnavailable(ValueError):
+    """Raised when a perception step has no real sensory data to work with."""
+
+
 class VirtualEmbodiment:
     """
     Main virtual embodiment system integrating all components.
@@ -643,16 +647,29 @@ class VirtualEmbodiment:
         }
     
     def _generate_sensory_input(self, env_state: Dict) -> SensoryInput:
-        """Generate sensory input from environment state"""
-        # Simplified - would generate multimodal sensory data
+        """Build sensory input from real data supplied in the environment state.
+
+        The caller must provide the observation: either a ready-made
+        ``SensoryInput`` under ``'sensory_input'`` or a visual frame (array-like)
+        under ``'visual'``. No observation is ever synthesised here; without one
+        ``SensoryInputUnavailable`` is raised.
+        """
         import time
-        
-        # Visual input (simplified)
-        visual_data = np.random.random((64, 64, 3))  # Placeholder
-        
+
+        provided = env_state.get('sensory_input')
+        if isinstance(provided, SensoryInput):
+            return provided
+
+        visual = env_state.get('visual')
+        if visual is None:
+            raise SensoryInputUnavailable(
+                "No sensory input in environment_state: supply a real visual "
+                "frame under 'visual' or a SensoryInput under 'sensory_input'."
+            )
+
         return SensoryInput(
             modality=ModalityType.VISION,
-            data=visual_data,
+            data=np.asarray(visual, dtype=float),
             timestamp=time.time()
         )
     
@@ -661,17 +678,16 @@ class VirtualEmbodiment:
         affordances: List[Dict],
         goal: Optional[Dict[str, Any]]
     ) -> Optional[MotorCommand]:
-        """Select action from affordances based on goal"""
-        if not affordances:
+        """Select the affordance best aligned with an explicit goal.
+
+        Without a goal no action is chosen (there is no random exploration
+        action taken on the agent's behalf).
+        """
+        if not affordances or goal is None:
             return None
         
-        if goal is None:
-            # Explore: random action
-            affordance = np.random.choice(affordances)
-        else:
-            # Exploit: action aligned with goal
-            affordance = max(affordances, 
-                           key=lambda a: self._goal_alignment(a, goal))
+        affordance = max(affordances, 
+                       key=lambda a: self._goal_alignment(a, goal))
         
         return MotorCommand(
             action_type=affordance['action_type'],
@@ -739,6 +755,13 @@ if __name__ == "__main__":
             ]
         }
     }
+
+    # Perception needs a real visual frame: pass a .npy file (H x W x 3).
+    import sys
+    if len(sys.argv) < 2:
+        sys.exit("usage: python virtual_embodiment.py <frame.npy>  "
+                 "(a real visual frame is required; none is synthesised)")
+    environment['visual'] = np.load(sys.argv[1])
     
     # Goal: Explore and interact
     goal = {'type': 'explore', 'value_threshold': 0.7}

@@ -75,14 +75,16 @@ Integrate the Layla AI assistant concept (from `.github/agents/layla.md`) into t
 - Inference API integration
 - Support for instruction-tuned models (Mistral, Llama, etc.)
 - Customizable prompt formatting
-- Automatic fallback mechanisms
+- Errors propagate to the caller (no fallback replies)
 
-#### Mock Adapter
+#### NanEcho Adapter
 
-- Development and testing support
-- No API keys required
-- Simulated streaming responses
-- Predictable behavior for unit tests
+- Talks to the trained NanEcho model served by `NanEcho/server.py` (`NANECHO_URL`)
+- Real token streaming over SSE (`/chat/stream`)
+- Provider `"nanecho"` (alias `"local"`)
+
+Every character reply comes from one of these models. With no provider configured,
+`getDefaultAdapter()` throws an `AIConfigurationError`; there is no mock or offline mode.
 
 #### Service Factory
 
@@ -152,7 +154,7 @@ Integrate the Layla AI assistant concept (from `.github/agents/layla.md`) into t
 ✅ **Type-Safe**: Full TypeScript coverage  
 ✅ **Extensible**: Easy to add characters, providers, features  
 ✅ **Modular**: Clean separation of concerns  
-✅ **Testable**: Mock adapters, dependency injection ready  
+✅ **Testable**: Adapters are injectable; test doubles live only in tests  
 ✅ **Error-Resilient**: Graceful degradation, user-friendly messages
 
 ### File Structure
@@ -192,7 +194,7 @@ ECHOLAYLA_README.md        # Documentation (NEW)
 - **Type Definitions**: 15+ interfaces/types
 - **Functions**: 40+ methods
 - **Characters**: 5 unique personalities
-- **AI Providers**: 3 supported (OpenAI, HuggingFace, Mock)
+- **AI Providers**: 3 supported (OpenAI, HuggingFace, NanEcho)
 
 ### Feature Completeness
 
@@ -324,7 +326,7 @@ service.setPrivacySettings({
 ### Privacy-First Design
 
 - **Local Storage**: Settings persisted locally
-- **No Mandatory Cloud**: Mock adapter for offline use
+- **No Mandatory Cloud**: run the NanEcho model locally
 - **Transparent Controls**: User controls all settings
 - **Data Retention**: Configurable retention periods
 
@@ -392,7 +394,7 @@ Five distinct personalities provide different perspectives and interaction style
 
 ### 2. Multi-Provider Support
 
-Works with OpenAI, HuggingFace, or mock adapter out of the box.
+Works with OpenAI, HuggingFace, or a local NanEcho server.
 
 ### 3. Type Safety
 

@@ -4,6 +4,8 @@ import { useMem0AI } from "../services/mem0aiService";
 import { supabase } from "../services/supabaseClient";
 import { RoomType } from "../components/EchoHomeMap";
 import { ToroidalDialogue } from "../types/ToroidalCognitive";
+import { ToroidalCognitiveService } from "../services/toroidalCognitiveService";
+import { describeModelError, resolveModel } from "../services/modelProvider";
 
 // Import Memory type but NOT useMemory
 type Memory = {
@@ -65,7 +67,7 @@ interface OrchestratorState {
 }
 
 interface SystemHealth {
-  memoryUsage: number; // Simulated memory usage percentage
+  memoryUsage: number | null; // JS heap usage percentage; null when unavailable
   operationalStatus: "optimal" | "degraded" | "impaired";
   lastHealthCheck: number;
   activeConnections: number;
@@ -220,38 +222,46 @@ export const OrchestratorProvider: React.FC<{ children: React.ReactNode }> = ({
         // Check for existing Supabase session
         const { data } = await supabase.auth.getSession();
         if (data.session) {
-          // Initialize Mem0AI if API key is available
+          // Open the user's Mem0AI store (an API key is optional: the model
+          // may also be a verified locally served one)
           const storedApiKey = localStorage.getItem("openai_api_key");
-          if (storedApiKey) {
-            try {
-              mem0ai.initialize(storedApiKey, data.session.user.id);
-              setState(prev => ({
-                ...prev,
-                memoryIntegrationStatus: "active",
-                aiIntegrationStatus: "active",
-              }));
-
-              logSystemEvent({
-                type: "system_event",
-                description: "AI and Memory systems initialized successfully",
-                component: "orchestrator",
-              });
-            } catch (error) {
-              logSystemEvent({
-                type: "system_event",
-                description: "Error initializing AI systems",
-                component: "orchestrator",
-                data: { error },
-              });
-            }
-          } else {
+          try {
+            mem0ai.initialize(storedApiKey || undefined, data.session.user.id);
+            setState(prev => ({ ...prev, memoryIntegrationStatus: "active" }));
+          } catch (error) {
             setState(prev => ({
               ...prev,
               memoryIntegrationStatus: "inactive",
-              aiIntegrationStatus: "inactive",
             }));
+            logSystemEvent({
+              type: "system_event",
+              description: "Error initializing memory system",
+              component: "orchestrator",
+              data: { error },
+            });
           }
         }
+
+        // AI status reflects whether a model is actually available
+        resolveModel().then(
+          endpoint => {
+            setState(prev => ({ ...prev, aiIntegrationStatus: "active" }));
+            logSystemEvent({
+              type: "system_event",
+              description: `Language model available: ${endpoint.label}`,
+              component: "orchestrator",
+            });
+          },
+          error => {
+            setState(prev => ({ ...prev, aiIntegrationStatus: "inactive" }));
+            logSystemEvent({
+              type: "system_event",
+              description: "No language model available",
+              component: "orchestrator",
+              data: { error: describeModelError(error) },
+            });
+          }
+        );
 
         // Start periodic health checks
         const healthCheckInterval = setInterval(() => {
@@ -383,28 +393,23 @@ export const OrchestratorProvider: React.FC<{ children: React.ReactNode }> = ({
       data: { command },
     });
 
-    let result = "";
-
     try {
-      // Use the registered terminal execution function if available
-      if (executeTerminalCommandRef) {
-        result = await executeTerminalCommandRef(command);
-      } else {
-        // Fallback to simulated response if no terminal function is registered
-        await new Promise(resolve => setTimeout(resolve, 500));
-        result = `Command simulation: ${command}\n\nNote: Terminal execution function not registered. Please make sure the terminal component is loaded.`;
+      // Only a registered terminal executor can run commands
+      if (!executeTerminalCommandRef) {
+        throw new Error(
+          "Terminal executor unavailable: command not executed. Open the terminal component so it can register its executor."
+        );
       }
+      return await executeTerminalCommandRef(command);
     } catch (error: unknown) {
-      result = `Error executing command: ${error instanceof Error ? error.message : "Unknown error"}`;
       console.error("Error executing terminal command:", error);
+      throw error;
     } finally {
       setState(prev => ({
         ...prev,
         terminalStatus: "ready",
       }));
     }
-
-    return result;
   };
 
   // Save content to memory system
@@ -515,14 +520,24 @@ export const OrchestratorProvider: React.FC<{ children: React.ReactNode }> = ({
 
   // Perform system health check
   const performHealthCheck = (): SystemHealth => {
-    // Simulate health check
-    const memoryUsage = Math.floor(Math.random() * 30) + 10; // 10-40%
+    // Real JS heap usage where the browser exposes it (Chromium), else null
+    const perfMemory = (
+      performance as Performance & {
+        memory?: { usedJSHeapSize: number; jsHeapSizeLimit: number };
+      }
+    ).memory;
+    const memoryUsage =
+      perfMemory && perfMemory.jsHeapSizeLimit > 0
+        ? Math.round(
+            (perfMemory.usedJSHeapSize / perfMemory.jsHeapSizeLimit) * 100
+          )
+        : null;
     const healthStatus: SystemHealth = {
       memoryUsage,
       operationalStatus:
-        memoryUsage > 80
+        memoryUsage !== null && memoryUsage > 80
           ? "impaired"
-          : memoryUsage > 60
+          : memoryUsage !== null && memoryUsage > 60
             ? "degraded"
             : "optimal",
       lastHealthCheck: Date.now(),
@@ -582,7 +597,7 @@ export const OrchestratorProvider: React.FC<{ children: React.ReactNode }> = ({
 
   const generateToroidalResponse = async (
     prompt: string,
-    _options: {
+    options: {
       responseMode?: "dual" | "echo-only" | "marduk-only" | "synced";
       creativityLevel?:
         | "balanced"
@@ -590,44 +605,35 @@ export const OrchestratorProvider: React.FC<{ children: React.ReactNode }> = ({
         | "creative"
         | "philosophical";
     } = {}
-  ) => {
-    // This would integrate with the ToroidalCognitiveService
-    // For now, return a mock response indicating the feature is available
-    const mockResponse: ToroidalDialogue = {
-      deepTreeEchoResponse: {
-        persona: "deepTreeEcho",
-        content: `*"Your inquiry creates beautiful resonance patterns..."* - Echo response for: ${prompt}`,
-        timestamp: new Date(),
-        processingTime: 500,
-      },
-      mardukResponse: {
-        persona: "marduk",
-        content: `*"Excellent. Analyzing request through recursive processing..."* - Marduk response for: ${prompt}`,
-        timestamp: new Date(),
-        processingTime: 500,
-      },
-      reflection: {
-        content: `## **Echo + Marduk (Reflection)**\n\nThe toroidal cognitive system is operational and ready to process: ${prompt}`,
-        synergy: "complementary" as const,
-        unified_answer:
-          "The system demonstrates balanced cognitive processing capabilities.",
-      },
-      metadata: {
-        queryId: Date.now().toString(),
-        totalProcessingTime: 1000,
-        contextType: "balanced" as const,
-      },
-    };
+  ): Promise<ToroidalDialogue> => {
+    // Echo, Marduk and the reflection are each generated by the model;
+    // errors propagate to the caller
+    const dialogue =
+      await ToroidalCognitiveService.getInstance().generateToroidalDialogue(
+        prompt,
+        {
+          creativityLevel: options.creativityLevel,
+          includeReflection: true,
+        }
+      );
 
-    // Update hemisphere balance in state based on response
     setState(prev => ({
       ...prev,
-      hemisphereBalance: 0, // Use default value since metadata structure changed
       lastUserAction: "toroidal_response_generated",
       lastUserActionTimestamp: Date.now(),
     }));
 
-    return mockResponse;
+    logSystemEvent({
+      type: "ai_interaction",
+      component: "toroidal",
+      description: "Toroidal dialogue generated",
+      data: {
+        queryId: dialogue.metadata.queryId,
+        responseMode: options.responseMode,
+      },
+    });
+
+    return dialogue;
   };
 
   // Create context value object

@@ -30,16 +30,6 @@ __version__ = "0.1.0"
 from .atomspace_client import AtomSpaceClient
 
 # Convenience functions
-def create_mock_data():
-    """
-    Generate mock cognitive state data for testing or demonstration.
-    
-    Returns:
-        Dictionary with mock cognitive state data
-    """
-    client = AtomSpaceClient("http://localhost:8080/api/v1")  # Dummy endpoint
-    return client.mock_get_cognitive_state()
-
 def analyze_atomspace(endpoint, include_bottlenecks=True, include_recommendations=True):
     """
     Analyze an AtomSpace and generate a comprehensive report.

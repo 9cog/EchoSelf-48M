@@ -704,14 +704,14 @@ jobs:
         ITER_NUM=$(python -c "
         import torch
         ckpt = torch.load('$CHECKPOINT', map_location='cpu', weights_only=False)
-        print(ckpt.get('iter_num', 0))
-        " 2>/dev/null || echo "0")
+        print(ckpt['iter_num'])
+        " 2>/dev/null || echo "null")
 
         VAL_LOSS=$(python -c "
         import torch
         ckpt = torch.load('$CHECKPOINT', map_location='cpu', weights_only=False)
-        print(f'{ckpt.get(\"best_val_loss\", 999.0):.4f}')
-        " 2>/dev/null || echo "999.0")
+        print(f'{float(ckpt[\"best_val_loss\"]):.4f}')
+        " 2>/dev/null || echo "null")
 
         echo "📊 Checkpoint: iteration=$ITER_NUM, val_loss=$VAL_LOSS"
 
@@ -841,7 +841,8 @@ jobs:
         echo "🔄 Running automated evaluation loop for continuous improvement..."
         python evaluation/automated_loop.py \
           --single-cycle \
-          --config=../../nanoGPT/${{ steps.params.outputs.output_dir }}/training_config.json
+          --config=../../nanoGPT/${{ steps.params.outputs.output_dir }}/training_config.json \
+          --model_path=../../nanoGPT/${{ steps.params.outputs.output_dir }}/ckpt.pt
 
     - name: Run automation integration analysis  
       run: |

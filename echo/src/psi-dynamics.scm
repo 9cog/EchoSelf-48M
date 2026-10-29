@@ -48,82 +48,16 @@
 
 	(define dominant-emotion (psi-get-current-emotion))
 	(define emotion-value (psi-get-number-value dominant-emotion))
-	;(show-emotion (cog-name dominant-emotion) emotion-value)
-	(if (equal? dominant-emotion psi-happy)
-		(be-happy emotion-value))
-	(if (equal? dominant-emotion psi-sad)
-		(be-sad emotion-value))
-	(if (equal? dominant-emotion psi-angry)
-		(be-irritated emotion-value))
-	(if (equal? dominant-emotion psi-relaxed)
-		(be-comprehending emotion-value))
+	; The model chooses the facial expression (and its intensity and
+	; duration) from the full expression vocabulary in the config
+	; (the "imperative" class), given the OpenPsi emotional state.
+	(model-show-expression-in-context "imperative"
+		(format #f "Your current dominant emotion (from your OpenPsi emotion model) is ~s with strength ~a on a 0..1 scale."
+			(cog-name dominant-emotion) emotion-value))
 )
 
 ; Register the expression callback function with OpenPsi
 (psi-set-expression-callback! psi-expression-callback)
-
-; ------------------------------------------------------------------
-; Functions to initiate random positive and negative expressions
-
-; XXX FIXME -- this is hacky -- and has multiple design flaws.
-; These are:
-;
-; * This should not use cog-evaluate! to force execution. Instead,
-;   this should be placed in the action part of an open-psi rule.
-;   Then, when that psi-rule triggers, the action will automatically
-;   triggered, and the actin will be performed. No cog-execute! is
-;   needed, because it will happen automatically.
-;
-; * This should used the defined predicates in express.scm, which
-;   will automatically provide an appropriate, configurable, random
-;   duration for the expression, instead of the hard-coded 8 seconds
-;   below.
-;
-; * There are a hell of a lot more valencies than just "positive"
-;   and "negative". Take a look at cfg-sophia.scm to see some of them:
-;   these include: bored, sleeping, aroused, listening (attentive),
-;   speaking (active). A full list of nine valencies are given in
-;   the `README-affects.md` in the base directory.
-(define (do-random-positive-expression intensity)
-	 (cog-evaluate!
-		 (Put (DefinedPredicate "Show facial expression")
-			 (ListLink
-				 (PutLink (DefinedSchemaNode "Pick random expression")
-					 (ConceptNode "positive"))
-				 (Number 8) (Number intensity)))))
-
-(define (do-random-negative-expression intensity)
-	 (cog-evaluate!
-		 (Put (DefinedPredicate "Show facial expression")
-			 (ListLink
-				 (PutLink (DefinedSchemaNode "Pick random expression")
-					 (ConceptNode "frustrated"))
-				 (Number 8) (Number intensity)))))
-
-(define (show-emotion emotion intensity)
-	(cog-evaluate! (Put (DefinedPredicate "Show facial expression")
-		(ListLink (Concept emotion) (Number 8) (Number intensity)))))
-
-
-(define (be-happy intensity)
-	;(display "in (be-happy)\n")
-	(cog-evaluate! (Put (DefinedPredicate "Show facial expression")
-		(ListLink (Concept "happy") (Number 8) (Number intensity)))))
-
-(define (be-sad intensity)
-	;(display "in (be-sad)\n")
-	(cog-evaluate! (Put (DefinedPredicate "Show facial expression")
-		(ListLink (Concept "sad") (Number 8) (Number intensity)))))
-
-(define (be-irritated intensity)
-	;(display "in (be-irritated)\n")
-	(cog-evaluate! (Put (DefinedPredicate "Show facial expression")
-		(ListLink (Concept "irritated") (Number 8) (Number intensity)))))
-
-(define (be-comprehending intensity)
-	;(display "in (be-comprehending)\n")
-	(cog-evaluate! (Put (DefinedPredicate "Show facial expression")
-		(ListLink (Concept "comprehending") (Number 8) (Number intensity)))))
 
 ; Temp error catching for when blender not running
 (define (do-catch function . params)

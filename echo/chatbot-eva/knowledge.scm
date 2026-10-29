@@ -266,7 +266,7 @@
 ; (DefinedPredicate "Show class expression")
 ; The `expression class` lines up with the config parameter `imperative`
 ; in the cfg-eva.scm file, which is used to control the strength and
-; duration of the expression (randomly chosen)
+; duration of the expression (chosen by the model, within that range)
 (DefineLink
 	(DefinedSchema "afraid")
 	(ListLink
@@ -407,7 +407,7 @@
 ; XXX Note that some synonyms have multiple "meanings" e.g. "anguish"
 ; could map to either "worry" or to "sad" expressions.  So, need to deal
 ; with that. Also: emotions are graded: some call for much milder
-; expressions than others -- right now, the expressions pick a random
+; expressions than others -- right now, the model picks a
 ; strength out of a range. e.g. "meloncholy" should ba a mild "sad".
 ;
 ; Some, like "disorientation", need to couple confusion with eye and
@@ -620,7 +620,7 @@
 ; (DefinedPredicate "Show class gesture")
 ; The `gesture class` lines up with the config parameter `imperative`
 ; in the cfg-eva.scm file, which is used to control the strength and
-; speed of the gesture (randomly chosen)
+; speed of the gesture (chosen by the model, within that range)
 (DefineLink
 	(DefinedSchema "amused-gest")
 	(ListLink
@@ -733,10 +733,6 @@
 	(List (Concept "reasoning-demo")))
 
 (Define
-	(DefinedSchema "philosophy-demo")
-	(List (Concept "philosophy-demo")))
-
-(Define
 	(DefinedSchema "saliency-demo")
 	(List (Concept "saliency-demo")))
 
@@ -745,13 +741,11 @@
 
 ; The keywords to indicate which mode to go
 (Reference (Word "reasoning") (DefinedSchema "reasoning-demo"))
-(Reference (Word "philosophy") (DefinedSchema "philosophy-demo"))
 (Reference (Word "saliency") (DefinedSchema "saliency-demo"))
 
 (Inheritance (DefinedPredicate "Do show demo") (Concept "pred-demo"))
 
 (Inheritance (DefinedSchema "reasoning-demo") (Concept "schema-demo"))
-(Inheritance (DefinedSchema "philosophy-demo") (Concept "schema-demo"))
 (Inheritance (DefinedSchema "saliency-demo") (Concept "schema-demo"))
 
 (Evaluation

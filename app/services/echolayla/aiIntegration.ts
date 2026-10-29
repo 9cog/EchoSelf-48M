@@ -7,11 +7,68 @@
 
 import type { InferenceConfig } from "./types";
 import process from "node:process";
+import {
+  AIConfigurationError,
+  resolveModel,
+  withResolvedModel,
+  type ResolvedModel,
+} from "../modelProvider.server";
+
+export { AIConfigurationError };
 
 /**
  * AI Provider types
  */
-export type AIProvider = "openai" | "huggingface" | "local";
+export type AIProvider = "openai" | "huggingface" | "nanecho" | "local";
+
+/**
+ * Read an error body from a failed response without assuming JSON.
+ */
+async function readErrorDetail(response: Response): Promise<string> {
+  const text = await response.text().catch(() => "");
+  try {
+    const parsed = JSON.parse(text);
+    const detail =
+      parsed?.error?.message ?? parsed?.error ?? parsed?.detail ?? text;
+    return typeof detail === "string" ? detail : JSON.stringify(detail);
+  } catch {
+    return text || response.statusText;
+  }
+}
+
+/**
+ * Iterate over the `data:` payloads of a server-sent-event response body,
+ * buffering partial lines across network chunks.
+ */
+async function* readSSEData(response: Response): AsyncGenerator<string> {
+  const reader = response.body?.getReader();
+  if (!reader) {
+    throw new Error("Failed to get response reader");
+  }
+  const decoder = new TextDecoder();
+  let buffer = "";
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed.startsWith("data:")) {
+          yield trimmed.slice(5).trim();
+        }
+      }
+    }
+    const rest = buffer.trim();
+    if (rest.startsWith("data:")) {
+      yield rest.slice(5).trim();
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
 
 /**
  * AI Response structure
@@ -53,48 +110,71 @@ export interface AIAdapter {
 export class OpenAIAdapter implements AIAdapter {
   private apiKey: string;
   private baseURL: string;
+  private model?: string;
 
-  constructor(apiKey?: string, baseURL?: string) {
-    this.apiKey = apiKey || process.env.OPENAI_API_KEY || "";
-    this.baseURL = baseURL || "https://api.openai.com/v1";
+  /**
+   * @param apiKey  required for the hosted OpenAI API; local
+   *                OpenAI-compatible servers (Ollama, llama.cpp, LM Studio,
+   *                vLLM) need none
+   * @param baseURL OpenAI-compatible base URL (default: hosted OpenAI)
+   * @param model   model served at baseURL; overrides config.model
+   */
+  constructor(apiKey?: string, baseURL?: string, model?: string) {
+    this.baseURL = (baseURL || "https://api.openai.com/v1").replace(/\/+$/, "");
+    this.apiKey = apiKey || (baseURL ? "" : process.env.OPENAI_API_KEY || "");
+    this.model = model;
+  }
+
+  private headers(): Record<string, string> {
+    if (!this.apiKey && this.baseURL === "https://api.openai.com/v1") {
+      throw new AIConfigurationError("OpenAI API key not configured");
+    }
+    return {
+      "Content-Type": "application/json",
+      ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
+    };
+  }
+
+  private body(
+    messages: Array<{ role: string; content: string }>,
+    config: InferenceConfig,
+    stream: boolean
+  ): string {
+    return JSON.stringify({
+      model: this.model || config.model || "gpt-3.5-turbo",
+      messages,
+      temperature: config.temperature,
+      max_tokens: config.maxTokens,
+      top_p: config.topP,
+      stream,
+    });
   }
 
   async generate(
     messages: Array<{ role: string; content: string }>,
     config: InferenceConfig
   ): Promise<AIResponse> {
-    if (!this.apiKey) {
-      throw new Error("OpenAI API key not configured");
-    }
-
     const response = await fetch(`${this.baseURL}/chat/completions`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${this.apiKey}`,
-      },
-      body: JSON.stringify({
-        model: config.model || "gpt-3.5-turbo",
-        messages,
-        temperature: config.temperature,
-        max_tokens: config.maxTokens,
-        top_p: config.topP,
-        stream: false,
-      }),
+      headers: this.headers(),
+      body: this.body(messages, config, false),
     });
 
     if (!response.ok) {
-      const error = await response.json();
       throw new Error(
-        `OpenAI API error: ${error.error?.message || response.statusText}`
+        `Model API error (${this.baseURL}): ${await readErrorDetail(response)}`
       );
     }
 
     const data = await response.json();
-    const choice = data.choices[0];
+    const choice = data.choices?.[0];
+    const content: string | undefined = choice?.message?.content;
+    if (!content || !content.trim()) {
+      throw new Error("The model returned an empty completion");
+    }
 
     return {
-      content: choice.message.content,
+      content,
       finishReason: choice.finish_reason,
       usage: data.usage,
     };
@@ -105,78 +185,45 @@ export class OpenAIAdapter implements AIAdapter {
     config: InferenceConfig,
     onChunk: StreamCallback
   ): Promise<AIResponse> {
-    if (!this.apiKey) {
-      throw new Error("OpenAI API key not configured");
-    }
-
     const response = await fetch(`${this.baseURL}/chat/completions`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${this.apiKey}`,
-      },
-      body: JSON.stringify({
-        model: config.model || "gpt-3.5-turbo",
-        messages,
-        temperature: config.temperature,
-        max_tokens: config.maxTokens,
-        top_p: config.topP,
-        stream: true,
-      }),
+      headers: this.headers(),
+      body: this.body(messages, config, true),
     });
 
     if (!response.ok) {
-      const error = await response.json();
       throw new Error(
-        `OpenAI API error: ${error.error?.message || response.statusText}`
+        `Model API error (${this.baseURL}): ${await readErrorDetail(response)}`
       );
     }
 
     let fullContent = "";
     let finishReason: "stop" | "length" | "error" = "stop";
 
-    const reader = response.body?.getReader();
-    const decoder = new TextDecoder();
+    for await (const data of readSSEData(response)) {
+      if (data === "[DONE]") continue;
 
-    if (!reader) {
-      throw new Error("Failed to get response reader");
+      let parsed;
+      try {
+        parsed = JSON.parse(data);
+      } catch (e) {
+        console.error("Error parsing SSE data:", e);
+        continue;
+      }
+      const content = parsed.choices?.[0]?.delta?.content || "";
+
+      if (content) {
+        fullContent += content;
+        onChunk(content);
+      }
+
+      if (parsed.choices?.[0]?.finish_reason) {
+        finishReason = parsed.choices[0].finish_reason;
+      }
     }
 
-    try {
-      let done = false;
-      while (!done) {
-        const result = await reader.read();
-        done = result.done;
-        if (done) break;
-
-        const chunk = decoder.decode(result.value);
-        const lines = chunk.split("\n").filter(line => line.trim() !== "");
-
-        for (const line of lines) {
-          if (line.startsWith("data: ")) {
-            const data = line.slice(6);
-            if (data === "[DONE]") continue;
-
-            try {
-              const parsed = JSON.parse(data);
-              const content = parsed.choices[0]?.delta?.content || "";
-
-              if (content) {
-                fullContent += content;
-                onChunk(content);
-              }
-
-              if (parsed.choices[0]?.finish_reason) {
-                finishReason = parsed.choices[0].finish_reason;
-              }
-            } catch (e) {
-              console.error("Error parsing SSE data:", e);
-            }
-          }
-        }
-      }
-    } finally {
-      reader.releaseLock();
+    if (!fullContent.trim()) {
+      throw new Error("The model returned an empty completion");
     }
 
     return {
@@ -231,14 +278,16 @@ export class HuggingFaceAdapter implements AIAdapter {
     );
 
     if (!response.ok) {
-      const error = await response.json();
       throw new Error(
-        `HuggingFace API error: ${error.error || response.statusText}`
+        `HuggingFace API error: ${await readErrorDetail(response)}`
       );
     }
 
     const data = await response.json();
-    const generated = data[0]?.generated_text || "";
+    const generated: string = data[0]?.generated_text || "";
+    if (!generated.trim()) {
+      throw new Error("HuggingFace API returned an empty completion");
+    }
 
     return {
       content: generated,
@@ -251,8 +300,8 @@ export class HuggingFaceAdapter implements AIAdapter {
     config: InferenceConfig,
     onChunk: StreamCallback
   ): Promise<AIResponse> {
-    // HuggingFace Inference API doesn't support streaming by default
-    // Fall back to non-streaming
+    // This endpoint is used without token streaming: deliver the whole real
+    // model reply as a single chunk.
     const result = await this.generate(messages, config);
     onChunk(result.content);
     return result;
@@ -277,25 +326,78 @@ export class HuggingFaceAdapter implements AIAdapter {
 }
 
 /**
- * Mock Adapter for development/testing
+ * NanEcho Adapter - the locally trained NanEcho model served by
+ * NanEcho/server.py (FastAPI). Configure with NANECHO_URL.
  */
-export class MockAdapter implements AIAdapter {
+export class NanEchoAdapter implements AIAdapter {
+  private baseURL: string;
+
+  constructor(baseURL?: string) {
+    this.baseURL = (baseURL || process.env.NANECHO_URL || "").replace(
+      /\/+$/,
+      ""
+    );
+  }
+
+  private requireURL(): string {
+    if (!this.baseURL) {
+      throw new AIConfigurationError(
+        "NanEcho server URL (NANECHO_URL) not configured"
+      );
+    }
+    return this.baseURL;
+  }
+
+  private body(
+    messages: Array<{ role: string; content: string }>,
+    config: InferenceConfig,
+    stream: boolean
+  ): string {
+    return JSON.stringify({
+      messages,
+      max_tokens: config.maxTokens,
+      temperature: config.temperature,
+      ...(config.topK !== undefined ? { top_k: config.topK } : {}),
+      stream,
+    });
+  }
+
   async generate(
     messages: Array<{ role: string; content: string }>,
     config: InferenceConfig
   ): Promise<AIResponse> {
-    const lastMessage = messages[messages.length - 1];
-    const characterName =
-      config.systemPrompt?.match(/You are (\w+),/)?.[1] || "AI";
+    const response = await fetch(`${this.requireURL()}/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: this.body(messages, config, false),
+    });
+
+    if (!response.ok) {
+      throw new Error(
+        `NanEcho server error: ${await readErrorDetail(response)}`
+      );
+    }
+
+    const data = (await response.json()) as {
+      text?: string;
+      tokens_generated?: number;
+    };
+    const content = data.text ?? "";
+    if (!content.trim()) {
+      throw new Error("NanEcho model returned an empty completion");
+    }
 
     return {
-      content: `[${characterName}] This is a mock response to: "${lastMessage.content}"`,
+      content,
       finishReason: "stop",
-      usage: {
-        promptTokens: 50,
-        completionTokens: 20,
-        totalTokens: 70,
-      },
+      usage:
+        data.tokens_generated !== undefined
+          ? {
+              promptTokens: 0,
+              completionTokens: data.tokens_generated,
+              totalTokens: data.tokens_generated,
+            }
+          : undefined,
     };
   }
 
@@ -304,16 +406,111 @@ export class MockAdapter implements AIAdapter {
     config: InferenceConfig,
     onChunk: StreamCallback
   ): Promise<AIResponse> {
-    const response = await this.generate(messages, config);
+    const response = await fetch(`${this.requireURL()}/chat/stream`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: this.body(messages, config, true),
+    });
 
-    // Simulate streaming by chunking
-    const words = response.content.split(" ");
-    for (const word of words) {
-      await new Promise(resolve => setTimeout(resolve, 50));
-      onChunk(word + " ");
+    if (!response.ok) {
+      throw new Error(
+        `NanEcho server error: ${await readErrorDetail(response)}`
+      );
     }
 
-    return response;
+    let fullContent = "";
+    for await (const data of readSSEData(response)) {
+      if (data === "[DONE]") break;
+      // server.py sends {token}, neserver.py sends {text, finished}.
+      const parsed = JSON.parse(data) as {
+        token?: string;
+        text?: string;
+        error?: string;
+        finished?: boolean;
+      };
+      if (parsed.error) {
+        throw new Error(`NanEcho generation error: ${parsed.error}`);
+      }
+      const token = parsed.token ?? parsed.text;
+      if (token) {
+        fullContent += token;
+        onChunk(token);
+      }
+      if (parsed.finished) break;
+    }
+
+    if (!fullContent.trim()) {
+      throw new Error("NanEcho model returned an empty completion");
+    }
+
+    return { content: fullContent, finishReason: "stop" };
+  }
+}
+
+/**
+ * Build the adapter for an endpoint chosen by the shared resolver
+ * (app/services/modelProvider.server.ts). Local OpenAI-compatible servers
+ * go through the OpenAI adapter with their own base URL and no key.
+ */
+export function createAdapterForModel(model: ResolvedModel): AIAdapter {
+  switch (model.kind) {
+    case "openai-compatible":
+      return new OpenAIAdapter(model.apiKey, model.baseURL, model.model);
+    case "huggingface":
+      return new HuggingFaceAdapter(model.apiKey, model.model);
+    case "nanecho":
+      return new NanEchoAdapter(model.baseURL);
+  }
+}
+
+/**
+ * Adapter that resolves the model endpoint on first use (explicit config,
+ * else a verified local model server) and re-resolves after a connection
+ * failure. It never answers on its own: with no model available it throws
+ * AIConfigurationError.
+ */
+export class ResolvedModelAdapter implements AIAdapter {
+  private adapters = new Map<ResolvedModel, AIAdapter>();
+
+  private adapterFor(model: ResolvedModel): AIAdapter {
+    let adapter = this.adapters.get(model);
+    if (!adapter) {
+      adapter = createAdapterForModel(model);
+      this.adapters.set(model, adapter);
+    }
+    return adapter;
+  }
+
+  /** The endpoint the next request will use. */
+  resolve(): Promise<ResolvedModel> {
+    return resolveModel();
+  }
+
+  generate(
+    messages: Array<{ role: string; content: string }>,
+    config: InferenceConfig
+  ): Promise<AIResponse> {
+    return withResolvedModel(model =>
+      this.adapterFor(model).generate(messages, config)
+    );
+  }
+
+  generateStream(
+    messages: Array<{ role: string; content: string }>,
+    config: InferenceConfig,
+    onChunk: StreamCallback
+  ): Promise<AIResponse> {
+    let streamed = false;
+    return withResolvedModel(model => {
+      if (streamed) {
+        // Tokens already reached the caller; do not start a second reply.
+        throw new Error("Model connection lost during streaming");
+      }
+      return this.adapterFor(model).generateStream(messages, config, chunk => {
+        streamed = true;
+        onChunk(chunk);
+      });
+    });
   }
 }
 
@@ -327,31 +524,35 @@ export class AIServiceFactory {
   ): AIAdapter {
     switch (provider) {
       case "openai":
-        return new OpenAIAdapter(options?.apiKey, options?.baseURL);
+        return new OpenAIAdapter(
+          options?.apiKey,
+          options?.baseURL,
+          options?.model
+        );
       case "huggingface":
         return new HuggingFaceAdapter(options?.apiKey, options?.model);
+      case "nanecho":
+        return new NanEchoAdapter(options?.baseURL);
       case "local":
-        // TODO: Implement local inference adapter (LLaMA.cpp, etc.)
-        return new MockAdapter();
+        // An explicit local OpenAI-compatible server, or auto-discovery of a
+        // verified local model server.
+        return options?.baseURL
+          ? new OpenAIAdapter(options.apiKey, options.baseURL, options.model)
+          : new ResolvedModelAdapter();
       default:
-        return new MockAdapter();
+        throw new AIConfigurationError(
+          `Unknown AI provider: ${String(provider)}`
+        );
     }
   }
 }
 
 /**
- * Get default AI adapter based on environment
+ * Get the default AI adapter: explicit configuration (ECHO_MODEL_BASE_URL,
+ * OPENAI_API_KEY, HUGGINGFACE_API_KEY, NANECHO_URL) or a verified locally
+ * served model, resolved on first use. Requests throw AIConfigurationError
+ * when no model is available.
  */
 export function getDefaultAdapter(): AIAdapter {
-  // Check for API keys in environment
-  if (process.env.OPENAI_API_KEY) {
-    return AIServiceFactory.createAdapter("openai");
-  }
-
-  if (process.env.HUGGINGFACE_API_KEY) {
-    return AIServiceFactory.createAdapter("huggingface");
-  }
-
-  // Fall back to mock for development
-  return AIServiceFactory.createAdapter("local");
+  return new ResolvedModelAdapter();
 }

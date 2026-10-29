@@ -14,6 +14,7 @@ Usage:
 """
 
 import os
+import sys
 import time
 import json
 import re
@@ -851,189 +852,6 @@ class AtomSpaceClient:
         
         return "\n".join(lines)
     
-    # --- Mock methods for testing without a real AtomSpace ---
-    
-    def mock_get_cognitive_state(self) -> Dict[str, Any]:
-        """
-        Generates randomized mock cognitive state data for testing and development purposes.
-        
-        Returns:
-            A dictionary containing simulated values for atom count, active goals, attention and atom distributions, cognitive schematics, detected bottlenecks, recommendations, and summary metrics.
-        """
-        import random
-        
-        # Mock atom count
-        atom_count = random.randint(1000, 10000)
-        
-        # Mock active goals
-        active_goals = []
-        for i in range(random.randint(3, 8)):
-            active_goals.append({
-                "handle": f"0x{random.randint(1000, 9999):x}",
-                "name": f"Goal{i+1}",
-                "type": "ConceptNode",
-                "sti": random.uniform(0.5, 0.95),
-                "lti": random.uniform(0.1, 0.5),
-                "tv": [random.uniform(0.7, 0.99), random.uniform(0.6, 0.9)]
-            })
-        
-        # Mock attention distribution
-        attention_distribution = {
-            "attention_stats": {
-                "avg_sti": random.uniform(0.1, 0.3),
-                "max_sti": random.uniform(0.8, 0.99),
-                "min_sti": random.uniform(0.01, 0.1),
-                "std_dev_sti": random.uniform(0.1, 0.3),
-                "avg_lti": random.uniform(0.1, 0.3),
-                "max_lti": random.uniform(0.7, 0.9),
-                "min_lti": random.uniform(0.01, 0.1)
-            },
-            "high_sti_count": random.randint(50, 200),
-            "high_sti_by_type": {
-                "ConceptNode": random.randint(20, 100),
-                "PredicateNode": random.randint(10, 50),
-                "ListLink": random.randint(5, 30),
-                "EvaluationLink": random.randint(10, 40),
-                "HebbianLink": random.randint(0, 20)
-            },
-            "sti_distribution": {
-                "very_high": random.randint(10, 50),
-                "high": random.randint(50, 150),
-                "medium": random.randint(200, 500),
-                "low": random.randint(500, 1000),
-                "very_low": random.randint(1000, 5000)
-            }
-        }
-        
-        # Mock atom distribution
-        atom_types = [
-            "ConceptNode", "PredicateNode", "ListLink", "EvaluationLink", 
-            "HebbianLink", "InheritanceLink", "SchemaNode", "VariableNode",
-            "GroundedSchemaNode", "GroundedPredicateNode", "AndLink", "OrLink"
-        ]
-        
-        type_counts = {}
-        for atom_type in atom_types:
-            type_counts[atom_type] = random.randint(50, 1000)
-        
-        total_atoms = sum(type_counts.values())
-        type_percentages = {
-            atom_type: (count / total_atoms * 100)
-            for atom_type, count in type_counts.items()
-        }
-        
-        sorted_types = sorted(
-            type_counts.items(), 
-            key=lambda x: x[1], 
-            reverse=True
-        )
-        
-        atom_distribution = {
-            "total_atoms": total_atoms,
-            "type_counts": type_counts,
-            "type_percentages": type_percentages,
-            "sorted_types": sorted_types
-        }
-        
-        # Mock cognitive schematics
-        schematics = {
-            "total_schematics": random.randint(50, 200),
-            "success_counts": {
-                "successful": random.randint(30, 150),
-                "failed": random.randint(10, 50),
-                "unknown": random.randint(0, 20)
-            },
-            "schematics_by_goal": {
-                f"Goal{i}": random.randint(5, 30)
-                for i in range(1, random.randint(5, 10))
-            }
-        }
-        
-        # Calculate success rate
-        total_known = schematics["success_counts"]["successful"] + schematics["success_counts"]["failed"]
-        success_rate = (schematics["success_counts"]["successful"] / total_known * 100) if total_known > 0 else 0
-        schematics["success_rate"] = success_rate
-        
-        # Sort goals by schematic count
-        sorted_goals = sorted(
-            schematics["schematics_by_goal"].items(), 
-            key=lambda x: x[1], 
-            reverse=True
-        )
-        schematics["top_goals"] = sorted_goals
-        
-        # Generate bottlenecks based on the mock data
-        bottlenecks = []
-        
-        # Check for attention concentration
-        if attention_distribution["sti_distribution"]["very_high"] > 40:
-            bottlenecks.append({
-                "type": "attention_concentration",
-                "description": "Too many atoms with very high STI values",
-                "severity": "medium",
-                "count": attention_distribution["sti_distribution"]["very_high"],
-                "recommendation": "Consider increasing ECAN decay rate or adjusting STI spread factors"
-            })
-        
-        # Check for goal proliferation
-        if len(active_goals) > 7:
-            bottlenecks.append({
-                "type": "goal_proliferation",
-                "description": "Excessive number of active goals",
-                "severity": "high" if len(active_goals) > 15 else "medium",
-                "count": len(active_goals),
-                "recommendation": "Increase goal selection threshold or implement stricter goal pruning"
-            })
-        
-        # Check for cognitive schematic issues
-        if success_rate < 40:
-            bottlenecks.append({
-                "type": "low_schematic_success",
-                "description": "Low success rate for cognitive schematics",
-                "severity": "high" if success_rate < 20 else "medium",
-                "rate": success_rate,
-                "recommendation": "Review procedure learning parameters or context definitions"
-            })
-        
-        # Check for atom type imbalance
-        for atom_type, percentage in type_percentages.items():
-            if percentage > 50:
-                bottlenecks.append({
-                    "type": "atom_type_imbalance",
-                    "description": f"Excessive dominance of {atom_type} atoms",
-                    "severity": "medium",
-                    "percentage": percentage,
-                    "recommendation": "Diversify knowledge representation or adjust creation parameters"
-                })
-        
-        # Generate recommendations
-        recommendations = []
-        for bottleneck in bottlenecks:
-            if "recommendation" in bottleneck:
-                recommendations.append({
-                    "for_issue": bottleneck["type"],
-                    "severity": bottleneck["severity"],
-                    "action": bottleneck["recommendation"]
-                })
-        
-        # Assemble the complete mock data
-        return {
-            "timestamp": datetime.now().isoformat(),
-            "atom_count": atom_count,
-            "active_goals": active_goals,
-            "attention_distribution": attention_distribution,
-            "atom_distribution": atom_distribution,
-            "cognitive_schematics": schematics,
-            "bottlenecks": bottlenecks,
-            "recommendations": recommendations,
-            "metrics": {
-                "goal_count": len(active_goals),
-                "high_sti_count": attention_distribution["high_sti_count"],
-                "schematic_success_rate": success_rate,
-                "atom_type_diversity": len(atom_distribution["type_counts"])
-            }
-        }
-
     # --- Enhanced Evaluation Metrics ---
     
     def evaluate_symbolic_accuracy(self, generated_text: str) -> Dict[str, Any]:
@@ -1325,14 +1143,13 @@ def main():
     """
     Runs the command-line interface for AtomSpace introspection and reporting.
     
-    Parses command-line arguments to connect to an AtomSpace REST API or generate mock data, produces an introspection report, prints a human-readable summary, and optionally saves the report as JSON.
+    Parses command-line arguments, connects to an AtomSpace REST API, produces an introspection report, prints a human-readable summary, and optionally saves the report as JSON.
     """
     import argparse
     
     parser = argparse.ArgumentParser(description="AtomSpace Client for NanoCog Introspection")
     parser.add_argument("--endpoint", type=str, help="AtomSpace REST API endpoint")
     parser.add_argument("--auth-token", type=str, help="Authentication token (if required)")
-    parser.add_argument("--mock", action="store_true", help="Use mock data instead of connecting to an AtomSpace")
     parser.add_argument("--output", type=str, help="Output file for the report (JSON format)")
     parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
     
@@ -1342,25 +1159,20 @@ def main():
     if args.verbose:
         logging.getLogger("nanocog.atomspace_client").setLevel(logging.DEBUG)
     
-    if args.mock:
-        print("Using mock data (no AtomSpace connection)")
-        client = AtomSpaceClient("http://localhost:8080/api/v1")  # Dummy endpoint
-        report = client.mock_get_cognitive_state()
-    else:
-        if not args.endpoint:
-            print("Error: AtomSpace endpoint is required when not using mock data")
-            parser.print_help()
-            return
-        
-        print(f"Connecting to AtomSpace at {args.endpoint}...")
-        client = AtomSpaceClient(args.endpoint, auth_token=args.auth_token)
-        
-        if not client.test_connection():
-            print("Failed to connect to AtomSpace. Use --mock to generate mock data instead.")
-            return
-        
-        print("Generating introspection report...")
-        report = client.generate_introspection_report()
+    if not args.endpoint:
+        print("Error: --endpoint is required")
+        parser.print_help()
+        sys.exit(2)
+    
+    print(f"Connecting to AtomSpace at {args.endpoint}...")
+    client = AtomSpaceClient(args.endpoint, auth_token=args.auth_token)
+    
+    if not client.test_connection():
+        print("Failed to connect to AtomSpace; no report generated.")
+        sys.exit(1)
+    
+    print("Generating introspection report...")
+    report = client.generate_introspection_report()
     
     # Print readable summary
     if "readable_summary" in report:

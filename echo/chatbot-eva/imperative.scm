@@ -79,11 +79,23 @@
 ; design would be to replace the sequence of bind-links, below, by
 ; open-psi rules (and/or the forward chainer).  For now, the stove-pipe
 ; is OK, because there are so few rules that are used.
+;
+; Why the most recent imperative performed no action (a string), or #f.
+; `grounded-talk` puts this into the "imperative-cannot-do" prompt
+; template, so the model can explain in character what went wrong.
+(define imperative-failure #f)
+(define-public (imperative-failure-reason) imperative-failure)
+
 (define-public (imperative-process imp)
 "
   Process imperative IMP, which should be a SentenceNode.
+  Returns the list of actions that were performed, as strings (possibly
+  empty).  When it is empty, `(imperative-failure-reason)` says why.
+  No reply is generated here; the caller asks the model for one.
 "
 	(define do-dbg-prt #t)
+	(define performed '())
+	(set! imperative-failure #f)
 
 	; Make the current sentence visible to everyone.
 	(StateLink current-sentence imp)
@@ -117,7 +129,7 @@
 	(cog-execute! obj-semantic-model-rule-1)
 	(cog-execute! obj-semantic-model-rule-2)
 
-	; Perform the action, and print a reply.
+	; Perform the action.
 	(let* ((act-do-do (cog-execute! action-rule-ao))
 			(action-list (cog-outgoing-set act-do-do))
 		)
@@ -130,8 +142,14 @@
 		; development. So report any errors.
 		(catch #t
 			(lambda ()
-				(for-each cog-evaluate! action-list))
+				(for-each cog-evaluate! action-list)
+				; Record what was actually done (as text, for the model).
+				(set! performed
+					(map (lambda (a) (format #f "~a" a)) action-list)))
 			(lambda (key . args)
+				(set! imperative-failure
+					(format #f "the action failed while being performed (~a: ~s)"
+						key args))
 				(display "Exception: ") (display key) (newline)
 				(display args) (newline)
 				(display "Bad eval: ") (display act-do-do) (newline)))
@@ -145,12 +163,12 @@
 			(cog-extract-recursive! (ListLink current-action x)))
 				action-list)
 
-		; XXX replace the dont-know reply by ChatScript or something.
 		(if (null? action-list)
 			(begin
+				(set! imperative-failure
+					"none of the words matched an action you know how to perform")
 				(State (Anchor "Chatbot: ChatbotEvaAction")
-					(Concept "Chatbot: NoResult"))
-				(display "I don't know how to do that.\n")))
+					(Concept "Chatbot: NoResult"))))
 
 		(State (Anchor "Chatbot: ChatbotEva")
 			(Concept "Chatbot: ProcessFinished"))
@@ -161,9 +179,7 @@
 	(StateLink current-imperative (WordNode "foobar"))
 	(StateLink current-action (WordNode "foobar"))
 
-	; Set the return value to be #<unspecified>, which avoids printing
-	; of the return value.  (if #f #f) has the same effect.
-	*unspecified*
+	performed
 )
 
 ;--------------------------------------------------------------------

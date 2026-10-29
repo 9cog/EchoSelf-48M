@@ -28,7 +28,7 @@ def analyze_quality_gates(analysis_file: str = "automation_analysis.json") -> di
             'error': 'No automation analysis found',
             'quality_gate_passed': False,
             'deployment_ready': False,
-            'overall_fidelity': 0.0
+            'overall_fidelity': None
         }
     
     try:
@@ -41,11 +41,22 @@ def analyze_quality_gates(analysis_file: str = "automation_analysis.json") -> di
             'error': f'Error loading analysis: {e}',
             'quality_gate_passed': False,
             'deployment_ready': False,
-            'overall_fidelity': 0.0
+            'overall_fidelity': None
+        }
+    
+    if analysis.get('status') == 'not_evaluated' or 'overall_fidelity' not in analysis:
+        reason = analysis.get('error', 'no fidelity metrics in analysis')
+        print(f'❌ Model was not evaluated: {reason}')
+        return {
+            'success': False,
+            'error': f'Model not evaluated: {reason}',
+            'quality_gate_passed': False,
+            'deployment_ready': False,
+            'overall_fidelity': None
         }
     
     # Extract key metrics
-    overall_fidelity = analysis.get('overall_fidelity', 0)
+    overall_fidelity = analysis['overall_fidelity']
     quality_status = analysis.get('quality_gate_status', {}).get('status', 'unknown')
     deployment_ready = analysis.get('quality_gate_status', {}).get('deployment_ready', False)
     next_actions = analysis.get('next_actions', {})

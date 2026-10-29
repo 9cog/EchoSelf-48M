@@ -9,7 +9,10 @@
 )
 
 ; Load various parts....
+(load "eva-model/llm.scm")
+(load "eva-model/prompts.scm")
 (load "eva-model/faces.scm")
 (load "eva-model/self-model.scm")
+(load "eva-model/face-choice.scm")
 (load "eva-model/time-map.scm")
 (load "eva-model/utilities.scm")

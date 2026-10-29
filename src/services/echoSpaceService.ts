@@ -322,21 +322,16 @@ export class EchoSpaceService {
     // Establish relation
     await this.establishRelation(virtualId, "Marduk-Sandbox", "operates_in");
 
-    // Create initial simulation record
+    // Create initial simulation record. No assessment has run yet, so there
+    // are no results (no outcome, metrics or risk level) until the sandbox
+    // model has actually assessed the hypothesis.
     const simulationRecord: SimulationRecord = {
       id: `sim-${virtualId}`,
       virtualAgentId: virtualId,
       hypothesis,
       arenaId: "Marduk-Sandbox",
       startTime: new Date(),
-      results: {
-        success: false,
-        outcome: "initialized",
-        metrics: {},
-        observations: [],
-        recommendations: [],
-        riskAssessment: { level: "low", factors: [] },
-      },
+      results: null,
     };
 
     this.activeSimulations.set(virtualId, simulationRecord);

@@ -1,5 +1,9 @@
-import OpenAI from "openai";
 import { useMem0AI } from "./mem0aiService";
+import {
+  chatComplete,
+  isModelKnownAvailable,
+  setModelOverrides,
+} from "./modelProvider";
 
 export type AIModel =
   | "gpt-4-turbo"
@@ -29,8 +33,6 @@ interface PromptTemplate {
 
 export class AIChatService {
   private static instance: AIChatService;
-  private openai: OpenAI | null = null;
-  private apiKey: string | null = null;
   private userId: string | null = null;
   private chatHistory: Map<string, Message[]> = new Map();
   private promptTemplates: PromptTemplate[] = [
@@ -65,20 +67,26 @@ export class AIChatService {
     return AIChatService.instance;
   }
 
-  public initialize(openAIKey: string, userId?: string): void {
-    this.apiKey = openAIKey;
-    this.openai = new OpenAI({
-      apiKey: openAIKey,
-      dangerouslyAllowBrowser: true,
-    });
-
+  /**
+   * Optionally set an API key for this session. Without one, calls use the
+   * configured base URL or a verified locally served model (modelProvider).
+   */
+  public initialize(openAIKey?: string, userId?: string): void {
+    if (openAIKey) {
+      setModelOverrides({ apiKey: openAIKey });
+    }
     if (userId) {
       this.userId = userId;
     }
   }
 
+  /**
+   * True when a model is configured or a local model was already verified.
+   * When false, sending still auto-discovers a local model and reports an
+   * honest error if none is served.
+   */
   public isInitialized(): boolean {
-    return !!this.openai && !!this.apiKey;
+    return isModelKnownAvailable();
   }
 
   public addPromptTemplate(name: string, content: string): void {
@@ -132,10 +140,6 @@ export class AIChatService {
     content: string,
     options: ChatOptions = {}
   ): Promise<string> {
-    if (!this.openai) {
-      throw new Error("AI Chat not initialized");
-    }
-
     if (!this.chatHistory.has(chatId)) {
       this.createChat(chatId);
     }
@@ -146,82 +150,34 @@ export class AIChatService {
     // Get chat history
     const history = this.chatHistory.get(chatId)!;
 
-    // Create messages array for API
-    let messages: Message[] = [];
-
-    // Add system prompt if provided
-    if (options.systemPrompt) {
-      messages.push({ role: "system", content: options.systemPrompt });
-    } else {
-      // Use default system prompt
-      messages.push({
+    // System prompt: caller's, else the default prompt template
+    const messages: Message[] = [
+      {
         role: "system",
         content:
-          this.getPromptTemplate("default") || "You are a helpful assistant.",
-      });
-    }
-
-    // Add conversation history (limit to last 10 messages to avoid token limits)
-    messages = [...messages, ...history.slice(-10)];
-
-    try {
-      if (options.stream) {
-        return await this.streamResponse(messages, options);
-      } else {
-        // Regular non-streaming response
-        const completion = await this.openai.chat.completions.create({
-          model: options.model || "gpt-4-turbo",
-          messages,
-          temperature: options.temperature ?? 0.7,
-          max_tokens: options.maxTokens || 1000,
-        });
-
-        const responseContent =
-          completion.choices[0]?.message?.content || "No response generated.";
-
-        // Add assistant response to history
-        this.addMessage(chatId, {
-          role: "assistant",
-          content: responseContent,
-        });
-
-        return responseContent;
-      }
-    } catch (error) {
-      console.error("Error in sendMessage:", error);
-      throw error;
-    }
-  }
-
-  private async streamResponse(
-    messages: Message[],
-    options: ChatOptions
-  ): Promise<string> {
-    if (!this.openai) throw new Error("AI Chat not initialized");
-
-    let fullResponse = "";
+          options.systemPrompt ||
+          this.getPromptTemplate("default") ||
+          "You are a helpful assistant.",
+      },
+      // Conversation history (last 10 messages to stay within context limits)
+      ...history.slice(-10),
+    ];
 
     try {
-      const stream = await this.openai.chat.completions.create({
-        model: options.model || "gpt-4-turbo",
-        messages,
+      const responseContent = await chatComplete(messages, {
+        model: options.model,
         temperature: options.temperature ?? 0.7,
-        max_tokens: options.maxTokens || 1000,
-        stream: true,
+        maxTokens: options.maxTokens || 1000,
+        onToken: options.stream ? options.onStream : undefined,
       });
 
-      for await (const chunk of stream) {
-        const content = chunk.choices[0]?.delta?.content || "";
-        fullResponse += content;
-
-        if (options.onStream) {
-          options.onStream(content);
-        }
-      }
-
-      return fullResponse;
+      // Add assistant response to history
+      this.addMessage(chatId, { role: "assistant", content: responseContent });
+      return responseContent;
     } catch (error) {
-      console.error("Error in streamResponse:", error);
+      // Keep history consistent: the unanswered user turn is dropped
+      history.pop();
+      console.error("Error in sendMessage:", error);
       throw error;
     }
   }
@@ -233,17 +189,13 @@ export class AIChatService {
     options: ChatOptions = {},
     deps?: { mem0ai?: ReturnType<typeof useMem0AI> }
   ): Promise<string> {
-    if (!this.openai) {
-      throw new Error("AI Chat not initialized");
-    }
-
-    // Add user message to history
-    this.addMessage(chatId, { role: "user", content });
-
     try {
       const mem0ai = deps?.mem0ai;
 
       if (mem0ai && mem0ai.isInitialized()) {
+        // Add user message to history (sendMessage does this on the other path)
+        this.addMessage(chatId, { role: "user", content });
+
         // Get chat history in the format expected by Mem0AI
         const history = this.chatHistory.get(chatId) || [];
         const formattedHistory = history.map(msg => ({
@@ -266,7 +218,7 @@ export class AIChatService {
 
         return response;
       } else {
-        // Fall back to regular response if Mem0AI is not initialized
+        // Regular model response when Mem0AI is not initialized
         return this.sendMessage(chatId, content, options);
       }
     } catch (error) {
@@ -281,7 +233,7 @@ export const useAIChat = () => {
   const service = AIChatService.getInstance();
 
   return {
-    initialize: (apiKey: string, userId?: string) =>
+    initialize: (apiKey?: string, userId?: string) =>
       service.initialize(apiKey, userId),
     isInitialized: () => service.isInitialized(),
     createChat: (chatId: string) => service.createChat(chatId),
