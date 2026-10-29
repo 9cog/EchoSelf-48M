@@ -64,29 +64,167 @@
 
 ; --------------------------------------------------------
 ;
-; Dice-roll conditionals. Return true or false, some fraction of the
-; time.  The define here sets up an initial value for the probability;
-; it can be changed later, at run-time.
+; Model decisions.  Whether Eva performs a discretionary action at some
+; moment (glance at a newcomer, study a face, fall asleep, wake up, ...)
+; is decided by the model, never by a random number.  The model is told
+; what the action is, what Eva currently perceives, and her configured
+; disposition (a probability, or a typical time range), and answers in
+; JSON.  If the model cannot be reached or replies invalidly, the error
+; is logged and the action is not performed.
+
+(use-modules (srfi srfi-1))
+
+; Plain-English descriptions of the discretionary actions, keyed by
+; the dice-roll action name or the timing predicate name.
+(define model-decision-actions
+	'(("glance new face" .
+		"briefly glance at a person who has just arrived, while you keep interacting with the person you are with")
+	  ("glance lost face" .
+		"glance at the spot where a person who just left was last seen")
+	  ("group interaction" .
+		"glance at another person in the group in front of you")
+	  ("face study" .
+		"study the face of the person you are with, letting your eyes move over their features")
+	  ("Time to change interaction" .
+		"turn your attention to a different person in front of you")
+	  ("Time to wake up" .
+		"wake up from sleep")
+	  ("Bored too long" .
+		"fall asleep, because nothing has been happening")
+	  ("Silent too long" .
+		"react to the long silence")
+	  ("Time to change expression" .
+		"change your facial expression")
+	  ("Time to make gesture" .
+		"make a gesture")
+	  ("Time to change gaze" .
+		"look around the room for someone's attention")
+	  ("Time to reset glance" .
+		"end your glance and look back")))
+
+(define (model-decision-action name)
+	(or (assoc-ref model-decision-actions name) name))
+
+; Current number held by the configuration StateLink named NAME, or #f.
+(define (state-number name)
+	(catch #t
+		(lambda ()
+			(let ((r (cog-execute!
+					(Get (TypedVariable (Variable "$x") (Type "NumberNode"))
+						(State (Schema name) (Variable "$x"))))))
+				(string->number (cog-name
+					(if (cog-link? r) (car (cog-outgoing-set r)) r)))))
+		(lambda _ #f)))
+
+(define (perceived-faces)
+	(catch #t
+		(lambda ()
+			(let ((n (inexact->exact (round (string->number (cog-name
+					(cog-execute! (DefinedSchema "Num visible faces"))))))))
+				(cond
+					((= n 0) "You cannot see anyone in front of you.")
+					((= n 1) "You can see one person in front of you.")
+					(else (format #f "You can see ~a people in front of you." n)))))
+		(lambda _ "")))
+
+; Ask the model a yes/no question about ACTION; DISPOSITION and EXTRA
+; are sentences given to it as context.  Returns the parsed reply alist.
+(define (model-decision action disposition extra)
+	(let ((obj (eva-model-complete-json eva-persona
+			(string-append
+				"Decide, in character, whether you " action " right now.\n"
+				(perceived-faces) "\n"
+				disposition "\n"
+				extra
+				"\nAnswer with only a JSON object with the keys \"now\" (true or false)"
+				" and \"recheck_seconds\" (how many seconds until you would"
+				" reconsider, if not now)."))))
+		(if (not (boolean? (assoc-ref obj "now")))
+			(throw 'eva-model-error
+				(format #f "model gave no boolean \"now\" for ~s" action)))
+		obj))
+
+(define (bool->stv b) (if b (stv 1 1) (stv 0 1)))
+
+; model-decides-now ACTION -- ACTION is a ConceptNode naming a
+; dice-roll action.  The model decides whether Eva does it now.
+(define-public (model-decides-now action-atom)
+	(define name (cog-name action-atom))
+	(define p (state-number (string-append name " probability")))
+	(catch #t
+		(lambda ()
+			(bool->stv (assoc-ref
+				(model-decision (model-decision-action name)
+					(if p
+						(format #f "Your disposition: in situations like this you do it about ~a% of the time."
+							(inexact->exact (round (* 100 p))))
+						"")
+					"")
+				"now")))
+		(lambda (key . args)
+			(eva-model-log-error
+				(format #f "deciding whether to ~a" name) key args)
+			(stv 0 1))))
+
+; Earliest time (seconds) at which each timing decision is reconsidered;
+; the model sets this when it decides "not yet".
+(define model-recheck-at (make-hash-table))
+
+; model-decides-timing PRED ELAPSED MIN MAX -- the timing predicate
+; PRED (a ConceptNode) has been running for ELAPSED seconds, past its
+; configured minimum.  The model decides whether now is the moment.
+(define-public (model-decides-timing pred-atom ts-atom min-atom max-atom)
+	(define name (cog-name pred-atom))
+	(define now (current-time))
+	(define recheck (hash-ref model-recheck-at name 0))
+	(if (< now recheck)
+		(stv 0 1)
+		(catch #t
+			(lambda ()
+				(let* ((elapsed (string->number (cog-name (cog-execute!
+							(Minus (TimeLink)
+								(DefinedSchema (cog-name ts-atom)))))))
+						(lo (state-number (cog-name min-atom)))
+						(hi (state-number (cog-name max-atom)))
+						(obj (model-decision (model-decision-action name)
+							(if (and lo hi)
+								(format #f "Your disposition: you usually do this after ~a to ~a seconds."
+									lo hi)
+								"")
+							(format #f "It has been ~a seconds." (round elapsed))))
+						(wait (assoc-ref obj "recheck_seconds")))
+					(if (not (assoc-ref obj "now"))
+						(hash-set! model-recheck-at name
+							(+ now (inexact->exact (round
+								(max 1 (min (if (real? wait) wait 1)
+									(if (and lo hi) (max 1 (- hi lo)) 60))))))))
+					(bool->stv (assoc-ref obj "now"))))
+			(lambda (key . args)
+				(eva-model-log-error
+					(format #f "deciding whether to ~a" name) key args)
+				; Do not retry the failing model on every behavior tick.
+				(hash-set! model-recheck-at name (+ now 5))
+				(stv 0 1)))))
+
+; --------------------------------------------------------
 ;
-; The probability is stored in a StateLink; the GetLink performs a
-; lookup of the current State value.  The value can be changed simply
-; by using the StateLink as normal.
+; Model-decided conditionals.  `dice-roll` keeps its historical name:
+; it declares a discretionary action and Eva's disposition towards it
+; (a probability, stored in a StateLink so it can be changed at
+; run-time), but whether the action happens is decided by the model
+; (see `model-decides-now`), not by a random number.
 ;
 ; Two strings are auto-generated: the action defnition, by pre-pending
-; "dice-roll: " to the action name, and the probability state name,
+; "dice-roll: " to the action name, and the disposition state name,
 ; by appending " probability" to the action name.
 ;
 ; line 588 -- dice_roll("glance_new_face") etc.
-
 (define-public (dice-roll action probability)
 	(define prob-name (string-append action " probability"))
 	(State (Schema prob-name) (Number probability))
 	(DefineLink
 		(DefinedPredicateNode (string-append "dice-roll: " action))
-		(GreaterThan
-			(Get
-				(TypedVariable (Variable "$x") (Type "NumberNode"))
-				(State (Schema prob-name) (Variable "$x")))
-			(RandomNumber (Number 0) (Number 1)))))
+		(Evaluation (GroundedPredicate "scm: model-decides-now")
+			(ListLink (Concept action)))))
 
 ; --------------------------------------------------------

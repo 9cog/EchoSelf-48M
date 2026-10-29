@@ -57,79 +57,29 @@
 ; to do something. PRED-NAME is the name given to the predicate,
 ; TS-NAME is the name given to the timestamp that holds the start-time;
 ; MIN-NAME and MAX-NAME are the string names of the configurable
-; min and max bounds for the time interval.  So, if the elapsed time
-; since the timestamp is less than MIN, then return false; if the
-; elapsed time is greater than MAX then return true; else return a
-; with increasing random liklihood.
-;
-; To compute the likelihood correctly, we have to compute the
-; integral since the last time that this check was made. Thus,
-; if we are calling this predicate 10 times a second, the probability
-; of a transition will be failry small; but if we call it once a second,
-; the probability will be ten times greater... computing even this
-; simple integral in atomese is painful. Yuck. But we have to do it.
+; min and max bounds for the time interval.  If the elapsed time since
+; the timestamp is less than MIN, return false (a refractory period).
+; Past MIN, the model decides whether now is the moment, given the
+; elapsed time and the configured range as Eva's disposition (see
+; `model-decides-timing` in cfg-tools.scm); no random number decides.
 (define (change-template pred-name ts-name min-name max-name)
 	(define get-ts (string-append "get " ts-name " timestamp"))
-	(define prev-ts (string-append "previous-" ts-name "-call"))
-	(define delta-ts (string-append "delta-" ts-name "-time"))
 	(DefineLink
 		(DefinedPredicate pred-name)
-		(SequentialOr
-			; If elapsed time greater than max, then true.
+		(SequentialAnd
+			; If elapsed time less than min, then false.
 			(GreaterThan
 				; Minus computes number of seconds since interaction start.
 				(Minus (TimeLink) (DefinedSchema get-ts))
 				(Get
-					(TypedVariable (Variable "$max") (Type "NumberNode"))
-					(State (Schema max-name) (Variable "$max")))
-			)
-			(SequentialAnd
-				; Delta is the time since the last check.
-				(True (Put (State (Schema delta-ts) (Variable "$x"))
-						(Minus (TimeLink)
-							(Get
-								(TypedVariable
-									(Variable "$p") (Type "NumberNode"))
-								(State (Schema prev-ts) (Variable "$p"))))))
-				; Update time of last check to now. Must record this
-				; timestamp before the min-time rejection, below.
-				(True (Put (State (Schema prev-ts) (Variable "$x")) (TimeLink)))
-
-				; If elapsed time less than min, then false.
-				(GreaterThan
-					; Minus computes number of seconds since interaction start.
-					(Minus (TimeLink) (DefinedSchema get-ts))
-					(Get
-						(TypedVariable (Variable "$min") (Type "NumberNode"))
-						(State (Schema min-name) (Variable "$min")))
-				)
-
-				; Compute integral: how long since last check?
-				; Perform a pro-rated coin flip. If it is only a very short
-				; time since we were last called, it is very unlikely that
-				; well the random number will come up heads.  But if its
-				; been a long time, then very likely the coin will come up
-				; heads.
-				(GreaterThan
-					(Get
-						(TypedVariable (Variable "$delta") (Type "NumberNode"))
-						(State
-							(Schema delta-ts) (Variable "$delta")))
-					; Random number in the configured range.
-					(RandomNumber
-						(Number 0)
-						(Minus
-							(Get
-								(TypedVariable
-									(Variable "$max") (Type "NumberNode"))
-								(State (Schema max-name) (Variable "$max")))
-							(Get
-								(TypedVariable
-									(Variable "$min") (Type "NumberNode"))
-								(State (Schema min-name) (Variable "$min")))))
-				)
-			)
-	)))
+					(TypedVariable (Variable "$min") (Type "NumberNode"))
+					(State (Schema min-name) (Variable "$min"))))
+			(Evaluation (GroundedPredicate "scm: model-decides-timing")
+				(ListLink
+					(Concept pred-name)
+					(Concept get-ts)
+					(Concept min-name)
+					(Concept max-name))))))
 
 ; Return true if it is time to interact with someone else.
 (change-template "Time to change interaction" "interaction"
