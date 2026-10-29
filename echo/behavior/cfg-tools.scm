@@ -77,7 +77,9 @@
 ; Plain-English descriptions of the discretionary actions, keyed by
 ; the dice-roll action name or the timing predicate name.
 (define model-decision-actions
-	'(("glance new face" .
+	'(("wake on disturbance" .
+		"wake up, because someone has arrived, spoken to you or made a sound while you were asleep")
+	  ("glance new face" .
 		"briefly glance at a person who has just arrived, while you keep interacting with the person you are with")
 	  ("glance lost face" .
 		"glance at the spot where a person who just left was last seen")

@@ -262,6 +262,9 @@
 	(DefinedPredicate "If sleeping then wake")
 	(SequentialAnd
 		(DefinedPredicate "Is sleeping?")
+		; Whether this disturbance wakes her is the model's decision.
+		(Evaluation (GroundedPredicate "scm: model-decides-now")
+			(ListLink (Concept "wake on disturbance")))
 		(DefinedPredicate "Wake up")))
 
 ;; If soma state was bored, change state to alert.
