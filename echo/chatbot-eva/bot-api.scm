@@ -67,7 +67,7 @@
                 (cons 'declarative base-slots))
             ((equal? utr (DefinedLinguisticConceptNode "ImperativeSpeechAct"))
                 ; Make the robot do whatever ...
-                (let ((done (imperative-process sent-node)))
+                (let ((done (imperative-process sent-node QUERY)))
                     (if (null? done)
                         (cons 'imperative-cannot-do
                             (cons `(reason . ,(or (imperative-failure-reason)
