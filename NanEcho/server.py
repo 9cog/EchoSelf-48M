@@ -213,6 +213,10 @@ class ModelConfig:
                     yield self.tokenizer.decode([next_token[0].item()])
 
 # --- AtomSpace Connection ---
+class AtomSpaceQueryError(Exception):
+    """An AtomSpace query failed; its result is unknown, never an empty agent state."""
+
+
 class AtomSpaceClient:
     """Client for connecting to and querying an AtomSpace instance."""
     
@@ -246,7 +250,10 @@ class AtomSpaceClient:
         Retrieves the total number of atoms from the AtomSpace.
         
         Returns:
-            The atom count as an integer, or 0 if the request fails.
+            The atom count as an integer.
+
+        Raises:
+            AtomSpaceQueryError: if the query fails (the count is unknown, not 0).
         """
         try:
             response = self.session.get(f"{self.endpoint}/atoms/count", timeout=5)
@@ -254,7 +261,7 @@ class AtomSpaceClient:
             return response.json().get("count", 0)
         except Exception as e:
             logger.error(f"Failed to get atom count: {str(e)}")
-            return 0
+            raise AtomSpaceQueryError(f"AtomSpace query for atom count failed: {e}") from e
     
     def get_atoms_by_type(self, atom_type: str, limit: int = 100) -> List[Dict[str, Any]]:
         """
@@ -265,7 +272,10 @@ class AtomSpaceClient:
             limit: The maximum number of atoms to return.
         
         Returns:
-            A list of dictionaries representing atoms of the given type, or an empty list if the request fails.
+            A list of dictionaries representing atoms of the given type.
+
+        Raises:
+            AtomSpaceQueryError: if the query fails.
         """
         try:
             response = self.session.get(
@@ -277,7 +287,7 @@ class AtomSpaceClient:
             return response.json().get("atoms", [])
         except Exception as e:
             logger.error(f"Failed to get atoms by type {atom_type}: {str(e)}")
-            return []
+            raise AtomSpaceQueryError(f"AtomSpace query for atoms of type {atom_type} failed: {e}") from e
     
     def get_high_sti_atoms(self, threshold: float = 0.5, limit: int = 100) -> List[Dict[str, Any]]:
         """
@@ -288,7 +298,10 @@ class AtomSpaceClient:
             limit: Maximum number of atoms to retrieve.
         
         Returns:
-            A list of atoms with STI above the threshold, or an empty list if the request fails.
+            A list of atoms with STI above the threshold.
+
+        Raises:
+            AtomSpaceQueryError: if the query fails.
         """
         try:
             # This is a conceptual endpoint - actual implementation depends on the AtomSpace REST API
@@ -301,7 +314,7 @@ class AtomSpaceClient:
             return response.json().get("atoms", [])
         except Exception as e:
             logger.error(f"Failed to get high STI atoms: {str(e)}")
-            return []
+            raise AtomSpaceQueryError(f"AtomSpace query for high STI atoms failed: {e}") from e
     
     def get_active_goals(self, limit: int = 20) -> List[Dict[str, Any]]:
         """
@@ -311,7 +324,10 @@ class AtomSpaceClient:
             limit: The maximum number of active goals to retrieve.
         
         Returns:
-            A list of dictionaries representing active goals, or an empty list if retrieval fails.
+            A list of dictionaries representing active goals.
+
+        Raises:
+            AtomSpaceQueryError: if the query fails.
         """
         try:
             # This is a conceptual endpoint - actual implementation depends on the AtomSpace REST API
@@ -324,14 +340,17 @@ class AtomSpaceClient:
             return response.json().get("goals", [])
         except Exception as e:
             logger.error(f"Failed to get active goals: {str(e)}")
-            return []
+            raise AtomSpaceQueryError(f"AtomSpace query for active goals failed: {e}") from e
     
     def get_attention_allocation_summary(self) -> Dict[str, Any]:
         """
         Retrieves a summary of attention allocation from the AtomSpace system.
         
         Returns:
-            A dictionary containing attention allocation data, or an empty dictionary if the request fails.
+            A dictionary containing attention allocation data.
+
+        Raises:
+            AtomSpaceQueryError: if the query fails.
         """
         try:
             # This is a conceptual endpoint - actual implementation depends on the AtomSpace REST API
@@ -343,13 +362,15 @@ class AtomSpaceClient:
             return response.json()
         except Exception as e:
             logger.error(f"Failed to get attention allocation summary: {str(e)}")
-            return {}
+            raise AtomSpaceQueryError(f"AtomSpace query for attention allocation summary failed: {e}") from e
     
     def get_agent_introspection_data(self) -> Dict[str, Any]:
         """
         Aggregates and returns comprehensive introspection data about the agent.
         
         The returned dictionary includes the current timestamp, total atom count, active goals, attention allocation summary, and high STI atoms retrieved from the AtomSpace.
+        Raises AtomSpaceQueryError if any query fails, so a failed query never reaches the
+        model or the client as an empty agent state.
         """
         data = {
             "timestamp": datetime.now().isoformat(),
@@ -492,7 +513,7 @@ async def root():
     }
 
 @app.get("/status")
-async def status(request: Request):
+async def get_status(request: Request):  # not "status": that would shadow fastapi.status
     """
     Returns the operational status of the server and model information.
     
@@ -639,6 +660,13 @@ async def run_diagnostics(
     except HTTPException:
         # Re-raise HTTP exceptions
         raise
+    except AtomSpaceQueryError as e:
+        # No diagnosis from data that was never measured
+        logger.error(str(e))
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"AtomSpace introspection failed; no diagnosis generated: {e}"
+        )
     except Exception as e:
         logger.error(f"Error in diagnostics endpoint: {str(e)}")
         raise HTTPException(
@@ -700,6 +728,13 @@ async def diagnostics_stream(
     except HTTPException:
         # Re-raise HTTP exceptions
         raise
+    except AtomSpaceQueryError as e:
+        # No diagnosis from data that was never measured
+        logger.error(str(e))
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"AtomSpace introspection failed; no diagnosis generated: {e}"
+        )
     except Exception as e:
         logger.error(f"Error in diagnostics stream endpoint: {str(e)}")
         raise HTTPException(
