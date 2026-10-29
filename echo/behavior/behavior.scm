@@ -511,6 +511,9 @@
 								(Concept "What was that sound?")))
 							; We are not bored, if we are hearing strange noises.
 							(True (DefinedSchema "set bored timestamp"))
+							; Whether the sound wakes her is the model's decision.
+							(Evaluation (GroundedPredicate "scm: model-decides-now")
+								(ListLink (Concept "wake on disturbance")))
 						)
 					)
 					(DefinedPredicate "Wake up")
