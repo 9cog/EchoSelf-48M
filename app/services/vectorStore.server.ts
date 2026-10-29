@@ -160,21 +160,10 @@ export class VectorStoreService {
     } catch (error) {
       console.error("Error searching vector store:", error);
 
-      // Fall back to local index if available
-      if (this.localIndex) {
-        try {
-          const results = (this.localIndex as any).searchKnn(embedding, limit); // eslint-disable-line @typescript-eslint/no-explicit-any -- Library method from dynamic import
-          return results.neighbors.map((id: number, i: number) => ({
-            id: id.toString(),
-            content: "Local result",
-            similarity: 1 - results.distances[i],
-          }));
-        } catch (localError) {
-          console.error("Error searching local index:", localError);
-        }
-      }
-
-      return [];
+      // The local index stores embeddings only, not the memory text, so it
+      // cannot stand in for the vector store: report the failure instead of
+      // returning results with invented content.
+      throw error instanceof Error ? error : new Error(String(error));
     }
   }
 }
