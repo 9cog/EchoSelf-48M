@@ -202,16 +202,15 @@ class ModelConfig:
                 for token_index in range(max_new_tokens):
                     next_token = self._next_token(x, temperature, top_k)
 
+                    # Stop at the end-of-text token; it is a control token, not reply text
+                    if next_token[0].item() == self.tokenizer.eot_token:
+                        break
+
                     # Append the new token to the input
                     x = torch.cat((x, next_token), dim=1)
 
                     # Decode and yield the new token
-                    new_token_text = self.tokenizer.decode([next_token[0].item()])
-                    yield new_token_text
-
-                    # Check if we've hit the end of text token
-                    if next_token[0].item() == self.tokenizer.eot_token:
-                        break
+                    yield self.tokenizer.decode([next_token[0].item()])
 
 # --- AtomSpace Connection ---
 class AtomSpaceClient:

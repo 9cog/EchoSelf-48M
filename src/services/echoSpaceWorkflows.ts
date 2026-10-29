@@ -457,16 +457,21 @@ export class ConsensusWorkflow {
       }
 
       const consensus = this.aggregateVotes(votes);
+      const council = await this.synthesizeStrategy(
+        context.simulationResults,
+        votes,
+        consensus
+      );
 
       const consensusState: ConsensusState = {
         sessionId: `consensus-${Date.now()}`,
         participatingAgents: votes.map(v => v.virtualAgentId),
-        strategy: this.deriveStrategy(context.simulationResults),
+        strategy: council.assessment,
         votes,
         status: consensus.converged ? "converged" : "diverged",
         finalDecision: consensus.converged
           ? {
-              strategy: consensus.strategy,
+              strategy: council.decision,
               confidence: consensus.confidence,
               dissenting: consensus.dissenting,
             }
@@ -495,13 +500,12 @@ export class ConsensusWorkflow {
 
   private aggregateVotes(votes: ConsensusVote[]): {
     converged: boolean;
-    strategy: string;
+    approvalRate: number;
     confidence: number;
     dissenting: string[];
   } {
     const approvals = votes.filter(v => v.vote === "approve");
     const rejections = votes.filter(v => v.vote === "reject");
-    const modifications = votes.filter(v => v.vote === "modify");
 
     const totalVotes = votes.length;
     const approvalRate = approvals.length / totalVotes;
@@ -511,38 +515,68 @@ export class ConsensusWorkflow {
     // Consensus threshold: >60% approval with >0.7 average confidence
     const converged = approvalRate > 0.6 && avgConfidence > 0.7;
 
-    let strategy = "No consensus reached";
-    if (converged) {
-      strategy = "Proceed with validated approach";
-    } else if (modifications.length > rejections.length) {
-      strategy = "Implement recommended modifications";
-    } else {
-      strategy = "Revise approach significantly";
-    }
-
     return {
       converged,
-      strategy,
+      approvalRate,
       confidence: avgConfidence,
       dissenting: rejections.map(v => v.virtualAgentId),
     };
   }
 
-  private deriveStrategy(simulations: SimulationRecord[]): string {
-    const assessed = simulations.filter(s => s.results !== null);
-    if (assessed.length === 0) {
-      return "No assessed simulations";
-    }
-    const successfulSimulations = assessed.filter(s => s.results?.success);
-    const successRate = successfulSimulations.length / assessed.length;
+  /**
+   * The council's strategy wording comes from the model: it reads the
+   * assessed simulations, the votes and the measured convergence, and states
+   * the overall assessment and the decision in its own words.
+   */
+  private async synthesizeStrategy(
+    simulations: SimulationRecord[],
+    votes: ConsensusVote[],
+    consensus: { converged: boolean; approvalRate: number; confidence: number }
+  ): Promise<{ assessment: string; decision: string }> {
+    const assessed = simulations
+      .filter(s => s.results !== null)
+      .map(s => ({
+        agent: s.virtualAgentId,
+        hypothesis: s.hypothesis,
+        success: s.results?.success,
+        outcome: s.results?.outcome,
+        recommendations: s.results?.recommendations,
+        risk: s.results?.riskAssessment,
+      }));
+    const prompt = `You are Marduk's strategy council. Virtual Marduks ran sandbox simulations and voted.
 
-    if (successRate > 0.8) {
-      return "High confidence strategy: Proceed with implementation";
-    } else if (successRate > 0.5) {
-      return "Moderate confidence strategy: Proceed with caution";
-    } else {
-      return "Low confidence strategy: Requires significant revision";
+Simulations: ${JSON.stringify(assessed)}
+Votes: ${JSON.stringify(votes)}
+Measured convergence: ${JSON.stringify({
+      converged: consensus.converged,
+      approvalRate: Number(consensus.approvalRate.toFixed(3)),
+      averageConfidence: Number(consensus.confidence.toFixed(3)),
+    })}
+
+State the council's overall strategic assessment of these results, and the concrete decision the council takes now (${consensus.converged ? "the council converged, so the decision is what to execute" : "the council did not converge, so the decision is how the approach must change before another round"}). Reply with JSON only:
+{"assessment": string, "decision": string}`;
+
+    const raw = await MardukScientistService.getInstance().generateResponse(
+      prompt,
+      { architecturalMode: "system", temperature: 0.4, template: false }
+    );
+    const start = raw.indexOf("{");
+    const end = raw.lastIndexOf("}");
+    if (start === -1 || end <= start) {
+      throw new Error("Model did not return a JSON council strategy");
     }
+    const data = JSON.parse(raw.slice(start, end + 1)) as Record<
+      string,
+      unknown
+    >;
+    const assessment =
+      typeof data.assessment === "string" ? data.assessment.trim() : "";
+    const decision =
+      typeof data.decision === "string" ? data.decision.trim() : "";
+    if (!assessment || !decision) {
+      throw new Error("Model council strategy is missing assessment/decision");
+    }
+    return { assessment, decision };
   }
 }
 

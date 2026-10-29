@@ -111,24 +111,38 @@ def test_command(args):
     config = load_config(args.config)
     config_manager = ConfigManager(config)
     
+    # A response only means something from trained weights.
+    if not args.checkpoint:
+        print("❌ --checkpoint is required: an untrained model has nothing to say")
+        return 1
+
     # Load model
     model = DeepTreeEchoTransformer(config_manager.model_config)
-    
-    if args.checkpoint:
-        print(f"Loading checkpoint: {args.checkpoint}")
-        checkpoint = torch.load(args.checkpoint, weights_only=False)
-        model.load_state_dict(checkpoint['model_state_dict'])
-    
+    print(f"Loading checkpoint: {args.checkpoint}")
+    checkpoint = torch.load(args.checkpoint, weights_only=False)
+    model.load_state_dict(checkpoint['model_state_dict'])
+
+    # Same tokenizer as training (GPT-2 BPE via tiktoken)
+    try:
+        import tiktoken
+    except ImportError:
+        print("❌ tiktoken is required to encode the prompt and decode the response (pip install tiktoken)")
+        return 1
+    enc = tiktoken.get_encoding("gpt2")
+
     # Run inference test
     model.eval()
     test_prompt = args.prompt or "The deep tree echo architecture"
-    
+
     print(f"\nTest prompt: {test_prompt}")
     print("Generating response...")
-    
-    # Simple generation (placeholder - implement actual generation)
-    print("Response: [Model inference would go here]")
-    
+
+    input_ids = torch.tensor([enc.encode(test_prompt)], dtype=torch.long)
+    output_ids = model.generate(input_ids, max_length=input_ids.shape[1] + args.max_new_tokens,
+                                temperature=args.temperature)
+    response = enc.decode(output_ids[0, input_ids.shape[1]:].tolist())
+    print(f"Response: {response}")
+
     return 0
 
 
@@ -152,6 +166,8 @@ def main():
     test_parser.add_argument('config', help='Path to configuration file')
     test_parser.add_argument('--checkpoint', help='Path to model checkpoint')
     test_parser.add_argument('--prompt', help='Test prompt for generation')
+    test_parser.add_argument('--max-new-tokens', type=int, default=100, help='Tokens to generate')
+    test_parser.add_argument('--temperature', type=float, default=0.8, help='Sampling temperature')
     test_parser.set_defaults(func=test_command)
     
     args = parser.parse_args()

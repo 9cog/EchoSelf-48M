@@ -181,16 +181,8 @@ export function hasExplicitModelConfig(): boolean {
 // ---------------------------------------------------------------------------
 
 type FetchLike = typeof fetch;
-let fetchImpl: FetchLike | null = null;
 
-/** Test hook: substitute the fetch implementation used for probes and calls. */
-export function setModelFetch(impl: FetchLike | null): void {
-  fetchImpl = impl;
-  invalidateModel();
-}
-
-const doFetch: FetchLike = (input, init) =>
-  (fetchImpl ?? globalThis.fetch)(input, init);
+const doFetch: FetchLike = (input, init) => globalThis.fetch(input, init);
 
 interface ProbeOutcome {
   endpoint?: ModelEndpoint;

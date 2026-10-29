@@ -86,15 +86,36 @@
 (define imperative-failure #f)
 (define-public (imperative-failure-reason) imperative-failure)
 
-(define-public (imperative-process imp)
+; Ask the model whether Eva, in character, does what was asked.
+; REQUEST is the user's words (or #f), ACTIONS the parsed action atoms.
+; Returns #t or #f; throws 'eva-model-error if the model gives no answer.
+(define (model-agrees-to-act request actions)
+	(let* ((obj (eva-model-complete-json eva-persona
+				(string-append
+					(if request
+						(format #f "Someone said to you: ~s.\n" request)
+						"Someone gave you a spoken command.\n")
+					"You understood it as these physical actions:\n"
+					(string-join (map (lambda (a) (format #f "~a" a)) actions) "\n")
+					"\nDecide, in character, whether you do it now. Answer with only a JSON object"
+					" with the key \"comply\" (true or false).")))
+			(comply (assoc-ref obj "comply")))
+		(if (not (boolean? comply))
+			(throw 'eva-model-error "model gave no boolean \"comply\""))
+		comply))
+
+(define-public (imperative-process imp . request)
 "
-  Process imperative IMP, which should be a SentenceNode.
+  Process imperative IMP, which should be a SentenceNode; the optional
+  second argument is the user's words, given to the model when it
+  decides whether Eva does what was asked.
   Returns the list of actions that were performed, as strings (possibly
   empty).  When it is empty, `(imperative-failure-reason)` says why.
   No reply is generated here; the caller asks the model for one.
 "
 	(define do-dbg-prt #t)
 	(define performed '())
+	(define agreed #f)
 	(set! imperative-failure #f)
 
 	; Make the current sentence visible to everyone.
@@ -138,14 +159,35 @@
 			(display act-do-do) (newline)
 		))
 
+		; Whether Eva does what was asked is the model's decision; on model
+		; failure nothing is performed and the reason is recorded.
+		(set! agreed
+			(and (not (null? action-list))
+				(catch #t
+					(lambda ()
+						(or (model-agrees-to-act
+								(and (pair? request) (car request)) action-list)
+							(begin
+								(set! imperative-failure
+									"you chose not to do what was asked")
+								#f)))
+					(lambda (key . args)
+						(eva-model-log-error "deciding whether to act on a command"
+							key args)
+						(set! imperative-failure
+							"you could not decide what to do (no language model answered)")
+						#f))))
+
 		; Evaluate can throw if we give it bad args. Which happens during
 		; development. So report any errors.
 		(catch #t
 			(lambda ()
-				(for-each cog-evaluate! action-list)
+				(if agreed (for-each cog-evaluate! action-list))
 				; Record what was actually done (as text, for the model).
 				(set! performed
-					(map (lambda (a) (format #f "~a" a)) action-list)))
+					(if agreed
+						(map (lambda (a) (format #f "~a" a)) action-list)
+						'())))
 			(lambda (key . args)
 				(set! imperative-failure
 					(format #f "the action failed while being performed (~a: ~s)"

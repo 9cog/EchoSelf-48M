@@ -74,45 +74,65 @@
 				(kind-params kind))
 			", ")))
 
+; All (class . name) pairs the configuration allows for this kind.
+(define (cfg-pairs pred-name)
+	(filter-map
+		(lambda (ev)
+			(let ((args (cog-outgoing-atom ev 1)))
+				(and (eq? 'ListLink (cog-type args))
+					(cons (cog-name (cog-outgoing-atom args 0))
+						(cog-name (cog-outgoing-atom args 1))))))
+		(cog-incoming-by-type (PredicateNode pred-name) 'EvaluationLink)))
+
 ; Ask the model to choose. Returns (name . alist-of-param-values),
 ; with every value validated against the configuration.
+; EMO is the emotional-expression class the situation usually calls
+; for; the model is told so, but chooses freely among every configured
+; class and choice (the reaction is the model's, not a fixed mapping).
 ; FIXED-NAME, if not #f, is an expression the caller already decided
 ; on (e.g. a spoken command "smile"); the model then chooses only the
-; parameters.  CONTEXT, if not #f, is an extra description of the
-; situation for the model.  Throws 'eva-model-error on any failure.
+; parameters, from the ranges of class EMO.  CONTEXT, if not #f, is an
+; extra description of the situation for the model.  Throws
+; 'eva-model-error on any failure.
 (define (model-choose kind what emo fixed-name context)
-	(let* ((names (if fixed-name (list fixed-name)
-				(cfg-choices (kind-pred kind) emo)))
+	(let* ((pairs (if fixed-name (list (cons emo fixed-name))
+				(cfg-pairs (kind-pred kind))))
 			(param-keys (map car (kind-params kind))))
-		(if (null? names)
+		(if (null? pairs)
 			(throw 'eva-model-error
-				(format #f "no ~a configured for class ~s" what emo)))
+				(format #f "no ~a configured" what)))
 		(let* ((prompt (string-append
-					(if context
-						(string-append context "\n")
-						(format #f "Situation / emotional state: ~s.\n" emo))
-					(format #f "Choose the ~a you show right now. "
-						what)
-					"Allowed choices, with their allowed parameter ranges:\n"
+					(if context (string-append context "\n") "")
+					(format #f "The situation usually calls for a ~a from the ~s class; choose what you actually show, from any class.\n"
+						what emo)
+					(format #f "Choose the ~a you show right now. " what)
+					"Allowed choices (class / name), with their allowed parameter ranges:\n"
 					(string-join
-						(map (lambda (n) (describe-choice kind emo n)) names)
+						(map (lambda (pr)
+								(format #f "[~a] ~a" (car pr)
+									(describe-choice kind (car pr) (cdr pr))))
+							pairs)
 						"\n")
 					"\n\nAnswer with only a JSON object with the keys "
 					(string-join
 						(map (lambda (k) (format #f "~s" k))
-							(cons "name" param-keys))
+							(cons "class" (cons "name" param-keys)))
 						", ")
 					"."))
 				(obj (eva-model-complete-json eva-persona prompt))
-				(name (assoc-ref obj "name")))
-			(if (not (and (string? name) (member name names)))
+				(name (assoc-ref obj "name"))
+				(cls (let ((c (assoc-ref obj "class")))
+						(if (and (not (string? c)) fixed-name) emo c))))
+			(if (not (and (string? name) (string? cls)
+						(member (cons cls name) pairs)))
 				(throw 'eva-model-error
-					(format #f "model chose ~s, not one of ~s" name names)))
+					(format #f "model chose ~s/~s, not one of the configured choices"
+						cls name)))
 			(cons name
 				(map (lambda (p)
 						(let ((v (assoc-ref obj (car p)))
-								(lo (cfg-number emo name (cadr p)))
-								(hi (cfg-number emo name (caddr p))))
+								(lo (cfg-number cls name (cadr p)))
+								(hi (cfg-number cls name (caddr p))))
 							(if (not (real? v))
 								(throw 'eva-model-error
 									(format #f "model gave no numeric ~s for ~s"
@@ -120,7 +140,7 @@
 							(if (not (and lo hi))
 								(throw 'eva-model-error
 									(format #f "no ~s range configured for ~s/~s"
-										(car p) emo name)))
+										(car p) cls name)))
 							; Keep the model's value inside the allowed range.
 							(cons (car p)
 								(max (min lo hi) (min (max lo hi) v)))))

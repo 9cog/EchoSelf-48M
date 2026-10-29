@@ -51,6 +51,9 @@
 ;
 (use-modules (opencog nlp))
 (use-modules (opencog nlp chatbot))
+; Eva's replies come from the language model (`grounded-talk`), never
+; from the rule/AIML/fuzzy-match chatbot.
+(use-modules (opencog nlp chatbot-eva))
 
 ; Work-around to weird bug: must load relex2logic at the top level.
 (use-modules (opencog nlp relex2logic))
@@ -61,14 +64,13 @@
 "
   dispatch-text TXT-ATOM
 
-  Pass the TXT-ATOM that STT heard into the OpenCog chatbot.
+  Pass the TXT-ATOM that STT heard to `grounded-talk`, which performs
+  any requested action and speaks a reply written by the language model.
 "
    (call-with-new-thread
 		; Must run in a new thread, else it deadlocks in python,
 		; since the text processing results in python calls.
-      ; (lambda () (process-query "luser" (cog-name TXT-ATOM)))
-      ; (lambda () (grounded-talk "luser" (cog-name TXT-ATOM)))
-      (lambda () (chat (cog-name TXT-ATOM)))
+      (lambda () (grounded-talk "luser" (cog-name TXT-ATOM)))
    )
    (stv 1 1)
 )

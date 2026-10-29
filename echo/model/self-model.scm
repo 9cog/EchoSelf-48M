@@ -938,25 +938,32 @@ proper atomese.
 			"random_sentence_kurzweil" "select_pln_answer")))
 
 ;----------
+; psi-controlled rules enabled in the default mode: an allowlist, so a
+; controlled rule from an external module (e.g. other chatbot-psi speech
+; rules that voice stored, matched or fetched sentences) is never switched
+; on just because it is not on a denylist.  This repository's only
+; controlled rule, saliency-tracking, has its own demo mode, so the list is
+; empty; add a rule alias here only if what it does comes from the model.
+(define rules-enabled-by-default '())
+
 (define-public (enable-all-demos)
 "
-  This is the default mode. All the rules are given a weight of 0.9.
+  This is the default mode. The rules on the `rules-enabled-by-default`
+  allowlist are given a weight of 0.9; every other controlled rule is off.
 "
-	; Turn these off by default: the never-enabled speech rules (see
-	; `rules-never-enabled`) plus saliency-tracking, which has its own
-	; demo mode.
-	(define rules-not-to-be-enabled
-		(cons (string-append psi-prefix-str "saliency-tracking")
-			rules-never-enabled))
+	(define rules-to-be-enabled
+		(map (lambda (s) (string-append psi-prefix-str s)) rules-enabled-by-default))
 
 	(psi-controller-occupy)
 
 	(for-each
 		(lambda (r)
-			(if (member (cog-name (car (psi-rule-alias r))) rules-not-to-be-enabled)
-				(psi-rule-set-atomese-weight r 0)
-				(psi-rule-set-atomese-weight r 0.9)
-			))
+			(let ((alias (cog-name (car (psi-rule-alias r)))))
+				(if (and (member alias rules-to-be-enabled)
+						(not (member alias rules-never-enabled)))
+					(psi-rule-set-atomese-weight r 0.9)
+					(psi-rule-set-atomese-weight r 0)
+				)))
 		(psi-get-controlled-rules)
 	)
 
