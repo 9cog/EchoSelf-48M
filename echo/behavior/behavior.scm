@@ -598,9 +598,10 @@
 						(Put (DefinedPredicate "Show model gesture")
 							(ConceptNode "chat-pos-think"))
 
-						; ... switch to chat fast blink rate...
-						(Evaluation (DefinedPredicate "Blink rate")
+						; ... the model sets her chat blink rhythm...
+						(Evaluation (GroundedPredicate "scm: model-blink-rate")
 							(ListLink
+								(Concept "talking, in a positive mood")
 								(DefinedSchema "blink chat fast mean")
 								(DefinedSchema "blink chat fast var")))
 				))
@@ -622,9 +623,10 @@
 						; ... furrow brows ...
 						(Put (DefinedPredicate "Show model gesture")
 							(ConceptNode "chat-neg-think"))
-						; ... switch to chat slow blink rate...
-						(Evaluation (DefinedPredicate "Blink rate")
+						; ... the model sets her chat blink rhythm...
+						(Evaluation (GroundedPredicate "scm: model-blink-rate")
 							(ListLink
+								(Concept "talking, in a negative mood")
 								(DefinedSchema "blink chat slow mean")
 								(DefinedSchema "blink chat slow var")))
 				))
@@ -637,9 +639,10 @@
 		; Switch back to exploration saccade ...
 		(DefinedPredicate "Explore Saccade")
 
-		; ... switch to normal blink rate...
-		(Evaluation (DefinedPredicate "Blink rate")
+		; ... the model sets her blink rhythm...
+		(Evaluation (GroundedPredicate "scm: model-blink-rate")
 			(ListLink
+				(Concept "idle again after talking or listening")
 				(DefinedSchema "blink normal mean")
 				(DefinedSchema "blink normal var")))
 
@@ -658,9 +661,10 @@
 		; Switch back to exploration saccade ...
 		(DefinedPredicate "Explore Saccade")
 
-		; ... switch to normal blink rate...
-		(Evaluation (DefinedPredicate "Blink rate")
+		; ... the model sets her blink rhythm...
+		(Evaluation (GroundedPredicate "scm: model-blink-rate")
 			(ListLink
+				(Concept "idle again after talking or listening")
 				(DefinedSchema "blink normal mean")
 				(DefinedSchema "blink normal var")))
 

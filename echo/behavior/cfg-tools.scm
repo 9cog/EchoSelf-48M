@@ -206,6 +206,43 @@
 				(hash-set! model-recheck-at name (+ now 5))
 				(stv 0 1)))))
 
+; model-blink-rate CONTEXT MEAN VAR -- Eva's blink rhythm as part of her
+; reaction in the situation named by CONTEXT (a ConceptNode).  MEAN and
+; VAR (schemas or numbers) are her configured baseline for that
+; situation; the model chooses the actual mean interval and variance,
+; kept within a physiological band around the baseline.  On model
+; failure the blink rate is left unchanged and the error is logged.
+(define-public (model-blink-rate context mean-atom var-atom)
+	(define (num a)
+		(string->number (cog-name
+			(if (cog-node? a) a (cog-execute! a)))))
+	(catch #t
+		(lambda ()
+			(let* ((m0 (num mean-atom)) (v0 (num var-atom))
+					(obj (eva-model-complete-json eva-persona
+						(format #f "Choose your blink rhythm, in character, now that you are ~a.
+~a
+Your usual rhythm in this situation: a blink every ~a seconds on average, variance ~a.
+Answer with only a JSON object with the keys \"mean\" (seconds between blinks) and \"var\" (variance)."
+							(cog-name context) (perceived-faces) m0 v0)))
+					(m (assoc-ref obj "mean"))
+					(v (assoc-ref obj "var"))
+					(band (lambda (x base)
+						(max (/ base 4) (min (* base 4) x)))))
+				(if (not (and (real? m) (real? v)))
+					(throw 'eva-model-error
+						(format #f "model gave no numeric blink mean/var for ~s"
+							(cog-name context))))
+				(cog-evaluate!
+					(Evaluation (DefinedPredicate "Blink rate")
+						(ListLink (Number (band m m0)) (Number (band v v0)))))
+				(stv 1 1)))
+		(lambda (key . args)
+			(eva-model-log-error
+				(format #f "choosing the blink rate while ~a" (cog-name context))
+				key args)
+			(stv 0 1))))
+
 ; --------------------------------------------------------
 ;
 ; Model-decided conditionals.  `dice-roll` keeps its historical name:
